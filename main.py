@@ -7,6 +7,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
@@ -164,7 +166,28 @@ class Handler(BaseHTTPRequestHandler):
         print("%s - %s" % (self.log_date_time_string(), fmt % args), flush=True)
 
 
+
+def check_telegram_connectivity():
+    """Check HTTPS reachability of Telegram's website and Bot API without a token."""
+    domains = ("https://telegram.org", "https://api.telegram.org")
+    print("Checking outbound HTTPS connectivity to Telegram...", flush=True)
+    for url in domains:
+        try:
+            request = Request(url, headers={"User-Agent": "Tinybox-Connectivity-Test"})
+            with urlopen(request, timeout=10) as response:
+                print("CONNECTIVITY OK: %s — HTTP %s" % (url, response.status), flush=True)
+        except HTTPError as exc:
+            # An HTTP response, even an error status, proves the host was reachable.
+            print("CONNECTIVITY OK: %s — server responded HTTP %s" % (url, exc.code), flush=True)
+        except (URLError, TimeoutError, OSError) as exc:
+            reason = getattr(exc, "reason", exc)
+            print("CONNECTIVITY FAILED: %s — %s: %s" %
+                  (url, type(reason).__name__, reason), flush=True)
+
+
+
 def main():
+    check_telegram_connectivity()
     raw_port = os.environ.get("PORT", "8080").strip()
     try:
         port = int(raw_port)
