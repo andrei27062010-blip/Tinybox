@@ -4,7 +4,6 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -173,4 +172,3 @@ func parseFloat(s string) *float64 {
 	return &value
 }
 
-var _ = fmt.Sprintf
