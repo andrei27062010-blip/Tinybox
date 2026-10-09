@@ -1,64 +1,39 @@
 # Tinybox
 
-A tiny, self-hosted server dashboard designed for small Linux machines. No Node.js, npm, frontend framework, external fonts, analytics, or third-party runtime dependencies.
+A tiny, self-hosted server dashboard designed for small Linux machines. Runs as a plain Python script with **no third-party dependencies**.
 
 ## What it does
 
-- Serves a responsive, dark dashboard from a single Go HTTP server.
-- Reports Linux memory usage, load averages, uptime, hostname, and Go process memory.
-- Exposes `/api/health` for health checks and `/api/metrics` for dashboard data.
-- Uses embedded static assets, so deployment is one small binary.
-- Includes a multi-stage Docker build and conservative container resource limits.
+- Serves a responsive dark dashboard.
+- Reports uptime, load averages, memory, hostname, platform, Python version, and process RSS/thread count.
+- Exposes `/api/health` and `/api/metrics`.
+- Prefers Linux cgroup memory counters when available, so RAM usage can reflect the container limit; otherwise it falls back to host `/proc/meminfo`.
+- Uses only the Python standard library. No Docker image or package installation is required for a normal run.
 
-> System metrics are read from Linux `/proc`. On non-Linux hosts, unsupported metrics may be omitted.
+## Run
 
-## Run locally
-
-Requires Go 1.24+.
+Requires Python 3.8+.
 
 ```sh
-go run .
+python main.py
 ```
 
-Open http://localhost:8080.
-
-## Build and run
+The server listens on `0.0.0.0:8080` by default. Set `PORT` if your host provides a different port, for example:
 
 ```sh
-go build -trimpath -ldflags="-s -w" -o tinybox .
-./tinybox
+PORT=5000 python main.py
 ```
 
-Set `PORT` to change the listen port. The default is `8080`.
-
-## Docker
-
-```sh
-docker build -t tinybox .
-docker run --rm -p 8080:8080 --memory=64m --cpus=0.3 tinybox
-```
-
-Or use the included Compose file:
-
-```sh
-docker compose up --build -d
-```
-
-The Compose configuration caps the container at 64 MiB RAM and 0.3 CPU. These are example limits; adjust them to match your host and workload.
+Choose the hosting panel's **Script** launch mode and set the entry point to `main.py`.
 
 ## Endpoints
 
 - `GET /` — dashboard
-- `GET /api/health` — small JSON health response
+- `GET /api/health` — health response, `{"status":"ok"}`
 - `GET /api/metrics` — system and process metrics
 
-## Resource-testing notes
+The dashboard refreshes metrics every 3 seconds. On Linux containers, metrics depend on which `/proc` and cgroup files the host exposes. If cgroup counters are unavailable, memory falls back to host-level information.
 
-Tinybox is intentionally dependency-free, but actual resource usage depends on the OS, architecture, Go version, and container runtime. Measure on the target server rather than assuming a fixed footprint:
+## Resource testing
 
-```sh
-docker stats tinybox
-/usr/bin/time -v ./tinybox
-```
-
-The dashboard refreshes metrics every 3 seconds and avoids external requests.
+The application intentionally uses only the standard library. Measure actual usage on the target host; the process RSS is included in `/api/metrics`.
