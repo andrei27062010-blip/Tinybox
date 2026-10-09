@@ -3,7 +3,6 @@
 import json
 import os
 import platform
-import re
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
