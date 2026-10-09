@@ -1,0 +1,18 @@
+services:
+  tinybox:
+    build: .
+    container_name: tinybox
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+    mem_limit: 64m
+    cpus: 0.30
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=1m,noexec,nosuid
