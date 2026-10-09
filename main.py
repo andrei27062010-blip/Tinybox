@@ -50,9 +50,13 @@ def memory_metrics():
     info = read_text("/proc/meminfo")
     if info:
         for line in info.splitlines():
-            match = re.match(r"^(MemTotal|MemAvailable):\\s+(\\d+)\\s+kB", line)
-            if match:
-                values[match.group(1)] = int(match.group(2)) * 1024
+            key, separator, rest = line.partition(":")
+            fields = rest.split()
+            if separator and key in ("MemTotal", "MemAvailable") and fields:
+                try:
+                    values[key] = int(fields[0]) * 1024
+                except ValueError:
+                    pass
     total = values.get("MemTotal", 0)
     available = values.get("MemAvailable", 0)
     return {"memTotalBytes": total, "memAvailBytes": available,
@@ -134,7 +138,7 @@ class Handler(BaseHTTPRequestHandler):
     def route(self):
         path = urlsplit(self.path).path
         if path == "/api/health":
-            self.send_bytes(200, b'{"status":"ok"}\\n', "application/json; charset=utf-8")
+            self.send_bytes(200, b'{"status":"ok"}\n', "application/json; charset=utf-8")
             return
         if path == "/api/metrics":
             body = json.dumps(collect_metrics(), separators=(",", ":")).encode("utf-8")
@@ -147,13 +151,13 @@ class Handler(BaseHTTPRequestHandler):
         }
         item = files.get(path)
         if item is None:
-            self.send_bytes(404, b"Not found\\n", "text/plain; charset=utf-8")
+            self.send_bytes(404, b"Not found\n", "text/plain; charset=utf-8")
             return
         filename, content_type, cache = item
         try:
             body = (WEB / filename).read_bytes()
         except OSError:
-            self.send_bytes(500, b"Dashboard asset unavailable\\n", "text/plain; charset=utf-8")
+            self.send_bytes(500, b"Dashboard asset unavailable\n", "text/plain; charset=utf-8")
             return
         self.send_bytes(200, body, content_type, cache)
 
