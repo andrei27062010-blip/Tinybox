@@ -31,17 +31,17 @@
       const used = Math.max(0, m.memTotalBytes - m.memAvailBytes);
       const percent = m.memTotalBytes ? Math.min(100, used / m.memTotalBytes * 100) : 0;
       $("memory-meter").style.width = percent.toFixed(1) + "%";
-      setText("memory-detail", m.memTotalBytes ? percent.toFixed(0) + "% memory in use" : "Linux memory metrics unavailable");
+      setText("memory-detail", m.memTotalBytes ? percent.toFixed(0) + "% used · " + (m.memorySource || "memory") : "Memory metrics unavailable");
       setText("uptime-value", formatDuration(m.uptimeSeconds));
       const loads = [m.load1, m.load5, m.load15].map(v => v == null ? "—" : Number(v).toFixed(2));
       setText("load-value", loads[0] + " / " + loads[1] + " / " + loads[2]);
       setText("cpu-count", m.cpus + (m.cpus === 1 ? " logical CPU" : " logical CPUs"));
-      setText("app-memory", formatBytes(m.processAllocBytes));
-      setText("goroutines", m.goroutines + " goroutines");
+      setText("app-memory", formatBytes(m.processRssBytes));
+      setText("goroutines", m.threads + " threads");
       setText("hostname", m.hostname || "Unknown");
       setText("platform", m.os || "Unknown");
       setText("architecture", m.arch || "Unknown");
-      setText("go-version", m.goVersion || "Unknown");
+      setText("go-version", m.pythonVersion ? "Python " + m.pythonVersion : "Unknown");
       setText("heartbeat-title", "All systems responding");
       setText("heartbeat-text", "Metrics endpoint answered successfully.");
     } catch (_) {
