@@ -197,12 +197,34 @@ def init_pet_db():
                 user_id INTEGER NOT NULL,
                 character_type TEXT NOT NULL DEFAULT 'dog',
                 pet_name TEXT NOT NULL,
-                food INTEGER NOT NULL DEFAULT 3,
-                happiness INTEGER NOT NULL DEFAULT 3,
+                food INTEGER NOT NULL DEFAULT 75,
+                happiness INTEGER NOT NULL DEFAULT 70,
+                water INTEGER NOT NULL DEFAULT 70,
+                energy INTEGER NOT NULL DEFAULT 80,
+                cleanliness INTEGER NOT NULL DEFAULT 75,
+                level INTEGER NOT NULL DEFAULT 1,
+                xp INTEGER NOT NULL DEFAULT 0,
+                last_needs_update INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Migrate columns on existing databases without deleting saved pets.
+        existing_columns = {row[1] for row in db.execute("PRAGMA table_info(pet_characters)")}
+        old_scale = "water" not in existing_columns
+        for column, definition in (
+            ("water", "INTEGER NOT NULL DEFAULT 70"),
+            ("energy", "INTEGER NOT NULL DEFAULT 80"),
+            ("cleanliness", "INTEGER NOT NULL DEFAULT 75"),
+            ("level", "INTEGER NOT NULL DEFAULT 1"),
+            ("xp", "INTEGER NOT NULL DEFAULT 0"),
+            ("last_needs_update", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if column not in existing_columns:
+                db.execute("ALTER TABLE pet_characters ADD COLUMN %s %s" % (column, definition))
+        if old_scale:
+            db.execute("UPDATE pet_characters SET food = MIN(100, food * 10), happiness = MIN(100, happiness * 10)")
+        db.execute("UPDATE pet_characters SET last_needs_update = CAST(strftime('%%s','now') AS INTEGER) WHERE last_needs_update = 0")
         db.execute("""
             CREATE INDEX IF NOT EXISTS idx_pet_characters_user
             ON pet_characters(user_id, id)
@@ -254,7 +276,7 @@ def pet_list(user_id):
     with sqlite3.connect(str(DB_PATH), timeout=10) as db:
         db.row_factory = sqlite3.Row
         return [dict(row) for row in db.execute(
-            "SELECT id, character_type, pet_name, food, happiness FROM pet_characters "
+            "SELECT id, character_type, pet_name, food, water, energy, cleanliness, happiness, level, xp FROM pet_characters "
             "WHERE user_id = ? ORDER BY id", (int(user_id),)
         ).fetchall()]
 
@@ -263,7 +285,7 @@ def pet_get_active(user_id, create_if_missing=True):
     with sqlite3.connect(str(DB_PATH), timeout=10) as db:
         db.row_factory = sqlite3.Row
         row = db.execute("""
-            SELECT c.id, c.user_id, c.character_type, c.pet_name, c.food, c.happiness
+            SELECT c.*
             FROM pet_preferences p
             JOIN pet_characters c ON c.id = p.active_pet_id AND c.user_id = p.user_id
             WHERE p.user_id = ?
@@ -278,14 +300,16 @@ def pet_get_active(user_id, create_if_missing=True):
 def pet_create(user_id, character_type="dog", pet_name=None):
     if character_type not in CHARACTER_TYPES:
         character_type = "dog"
-    name = (pet_name or CHARACTER_TYPES[character_type]["default_name"]).strip()[:24]
+    name = " ".join((pet_name or "").split())[:24]
     if not name:
-        name = CHARACTER_TYPES[character_type]["default_name"]
+        return None
     with sqlite3.connect(str(DB_PATH), timeout=10) as db:
         cur = db.execute("""
-            INSERT INTO pet_characters(user_id, character_type, pet_name)
-            VALUES (?, ?, ?)
-        """, (int(user_id), character_type, name))
+            INSERT INTO pet_characters
+                (user_id, character_type, pet_name, food, water, energy, cleanliness,
+                 happiness, level, xp, last_needs_update)
+            VALUES (?, ?, ?, 75, 70, 80, 75, 70, 1, 0, ?)
+        """, (int(user_id), character_type, name, int(time.time())))
         pet_id = cur.lastrowid
         db.execute("""
             INSERT INTO pet_preferences(user_id, active_pet_id) VALUES (?, ?)
@@ -355,23 +379,89 @@ def pet_delete(user_id, pet_id=None):
     return pet_get_active(user_id, create_if_missing=False)
 
 
-def pet_db_action(user_id, action=None):
-    """Apply an action to the active character and return its state."""
-    state = pet_get_active(user_id)
-    with sqlite3.connect(str(DB_PATH), timeout=10) as db:
-        if action == "pet":
+def pet_apply_needs_decay(user_id):
+    """Gently lower needs while a pet is unattended; absence is not fatal."""
+    state = pet_get_active(user_id, create_if_missing=False)
+    if not state:
+        return None
+    now = int(time.time())
+    last = int(state.get("last_needs_update") or now)
+    elapsed = max(0, min(now - last, 30 * 24 * 3600))
+    food_loss = elapsed // (6 * 3600)
+    water_loss = elapsed // (4 * 3600)
+    mood_loss = elapsed // (12 * 3600)
+    clean_loss = elapsed // (10 * 3600)
+    if food_loss or water_loss or mood_loss or clean_loss:
+        with sqlite3.connect(str(DB_PATH), timeout=10) as db:
             db.execute("""
-                UPDATE pet_characters SET happiness = MIN(10, happiness + 1),
-                    updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?
-            """, (state["id"], int(user_id)))
-        elif action == "feed":
-            db.execute("""
-                UPDATE pet_characters SET food = MIN(10, food + 1),
-                    happiness = MIN(10, happiness + 1),
-                    updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?
-            """, (state["id"], int(user_id)))
-        db.commit()
+                UPDATE pet_characters
+                SET food = MAX(0, food - ?),
+                    water = MAX(0, water - ?),
+                    happiness = MAX(0, happiness - ?),
+                    cleanliness = MAX(0, cleanliness - ?),
+                    last_needs_update = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND user_id = ?
+            """, (int(food_loss), int(water_loss), int(mood_loss), int(clean_loss),
+                  now, state["id"], int(user_id)))
+            db.commit()
     return pet_get_active(user_id, create_if_missing=False)
+
+
+def pet_db_action(user_id, action=None):
+    """Apply an activity, update needs and grant experience."""
+    state = pet_apply_needs_decay(user_id) or pet_get_active(user_id)
+    if not state:
+        return None, None
+    effects = {
+        "pet": {"happiness": 8, "xp": 5},
+        "feed": {"food": 25, "happiness": 2, "xp": 8},
+        "water": {"water": 30, "xp": 6},
+        "sleep": {"energy": 45, "happiness": 2, "xp": 7},
+        "walk": {"happiness": 12, "energy": -18, "cleanliness": -8, "xp": 12},
+        "wash": {"cleanliness": 35, "happiness": -2, "xp": 6},
+        "play": {"happiness": 15, "energy": -15, "xp": 10},
+    }.get(action)
+    if not effects:
+        return state, None
+    assignments = []
+    params = []
+    for column, amount in effects.items():
+        if column == "xp":
+            continue
+        if amount >= 0:
+            assignments.append("%s = MIN(100, %s + ?)" % (column, column))
+        else:
+            assignments.append("%s = MAX(0, %s - ?)" % (column, column))
+        params.append(abs(amount))
+    xp_gain = effects.get("xp", 0)
+    assignments.extend(["xp = xp + ?", "last_needs_update = ?", "updated_at = CURRENT_TIMESTAMP"])
+    params.extend([xp_gain, int(time.time()), state["id"], int(user_id)])
+    with sqlite3.connect(str(DB_PATH), timeout=10) as db:
+        db.execute("UPDATE pet_characters SET " + ", ".join(assignments) +
+                   " WHERE id = ? AND user_id = ?", params)
+        db.commit()
+        level, xp = db.execute(
+            "SELECT level, xp FROM pet_characters WHERE id = ? AND user_id = ?",
+            (state["id"], int(user_id))
+        ).fetchone()
+        while xp >= level * 100:
+            xp -= level * 100
+            level += 1
+        db.execute("UPDATE pet_characters SET level = ?, xp = ? WHERE id = ? AND user_id = ?",
+                   (level, xp, state["id"], int(user_id)))
+        db.commit()
+    updated = pet_get_active(user_id, create_if_missing=False)
+    reactions = {
+        "pet": "радостно откликается на ласку",
+        "feed": "довольно хрустит кормом",
+        "water": "с удовольствием пьёт свежую воду",
+        "sleep": "сворачивается клубочком и отдыхает",
+        "walk": "возвращается с прогулки, полный впечатлений",
+        "wash": "чистый и пушистый, хоть на выставку",
+        "play": "весело носится после игры",
+    }
+    return updated, "%s %s!" % (updated["pet_name"], reactions.get(action, "доволен заботой"))
 
 
 def telegram_edit_with_retry(payload, timeout=12, attempts=3):
@@ -508,11 +598,20 @@ def pet_keyboard():
             {"text": "🍖 Покормить", "callback_data": "feed"}
         ],
         [
-            {"text": "🔄 Выбрать персонажа", "callback_data": "list"},
-            {"text": "➕ Создать", "callback_data": "new"}
+            {"text": "💧 Вода", "callback_data": "water"},
+            {"text": "😴 Сон", "callback_data": "sleep"}
         ],
         [
-            {"text": "✏️ Переименовать", "callback_data": "rename_help"},
+            {"text": "🚶 Прогулка", "callback_data": "walk"},
+            {"text": "🎾 Играть", "callback_data": "play"}
+        ],
+        [
+            {"text": "🫧 Помыть", "callback_data": "wash"},
+            {"text": "🔄 Персонажи", "callback_data": "list"}
+        ],
+        [
+            {"text": "➕ Создать", "callback_data": "new"},
+            {"text": "✏️ Имя", "callback_data": "rename_help"},
             {"text": "🗑 Удалить", "callback_data": "delete_prompt"}
         ]
     ]}
@@ -557,18 +656,24 @@ def pet_message(state, greeting=False, reaction=None):
     info = CHARACTER_TYPES.get(state.get("character_type"), CHARACTER_TYPES["dog"])
     title = "%s Знакомься, %s!" % (info["emoji"], state["pet_name"]) if greeting else "%s %s" % (info["emoji"], state["pet_name"])
     personalities = {
-        "dog": "Я люблю ласку, вкусняшки и быть рядом с тобой.",
-        "cat": "Я независимая натура, но ласку и вкусняшки ценю.",
+        "dog": "Я люблю ласку, вкусняшки и прогулки.",
+        "cat": "Я независимая натура, но ласку и уют ценю.",
         "fox": "Я любопытный хитрец: давай играть и искать приключения!"
     }
     reaction_line = (reaction + "\n\n") if reaction else ""
+    level = int(state.get("level", 1))
+    xp = int(state.get("xp", 0))
     return (
-        title + "\n\n"
+        title + "\n"
+        + "⭐ Уровень: %s · Опыт: %s/%s\n\n" % (level, xp, level * 100)
         + reaction_line
         + personalities.get(state.get("character_type"), personalities["dog"]) + "\n\n"
-        + "🍖 Сытость: %s/10\n" % state["food"]
-        + "💖 Настроение: %s/10\n\n" % state["happiness"]
-        + "Выбирай действие или управляй своими персонажами кнопками ниже."
+        + "🍗 Сытость: %s/100\n" % state.get("food", 75)
+        + "💧 Вода: %s/100\n" % state.get("water", 70)
+        + "😊 Настроение: %s/100\n" % state.get("happiness", 70)
+        + "⚡ Энергия: %s/100\n" % state.get("energy", 80)
+        + "🫧 Чистота: %s/100\n\n" % state.get("cleanliness", 75)
+        + "Каждое действие даёт опыт. Заботься обо мне, чтобы повышать уровень!"
     )
 
 
