@@ -238,7 +238,16 @@ def telegram_call(method, payload=None, timeout=40):
     try:
         with urlopen(request, timeout=timeout) as response:
             result = json.loads(response.read().decode("utf-8"))
-    except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
+    except HTTPError as exc:
+        # Include Telegram's status/description, but never the request URL (it contains the token).
+        try:
+            body = exc.read().decode("utf-8", errors="replace")
+            details = json.loads(body).get("description", body[:200])
+        except (ValueError, OSError):
+            details = "no response details"
+        raise RuntimeError("%s returned HTTP %s: %s" %
+                           (method, exc.code, details)) from exc
+    except (URLError, TimeoutError, OSError, ValueError) as exc:
         raise RuntimeError("%s request failed: %s" % (method, type(exc).__name__)) from exc
     if not result.get("ok"):
         # Telegram's response description is useful but avoid echoing credentials.
@@ -295,16 +304,22 @@ def handle_pet_update(update):
         if not user_id or data not in ("pet", "feed"):
             telegram_call("answerCallbackQuery", {"callback_query_id": callback["id"]})
             return
+        # Acknowledge the tap first so Telegram stops showing the loading spinner quickly.
+        telegram_call("answerCallbackQuery", {"callback_query_id": callback["id"]})
         state = pet_db_action(user_id, data)
         reaction = random.choice(PET_REACTIONS[data])
-        telegram_call("answerCallbackQuery", {"callback_query_id": callback["id"]})
         if chat.get("id") is not None and message.get("message_id") is not None:
-            telegram_call("editMessageText", {
-                "chat_id": chat["id"],
-                "message_id": message["message_id"],
-                "text": pet_message(state, reaction=reaction),
-                "reply_markup": pet_keyboard()
-            })
+            try:
+                telegram_call("editMessageText", {
+                    "chat_id": chat["id"],
+                    "message_id": message["message_id"],
+                    "text": pet_message(state, reaction=reaction),
+                    "reply_markup": pet_keyboard()
+                })
+            except RuntimeError as exc:
+                # Telegram returns this when the rendered text/keyboard did not change.
+                if "message is not modified" not in str(exc).lower():
+                    raise
         return
 
     message = update.get("message") or update.get("edited_message") or {}
