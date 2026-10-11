@@ -322,10 +322,11 @@ def bot_polling_loop():
                 try:
                     handle_pet_update(update)
                 except (RuntimeError, sqlite3.Error, OSError, ValueError, KeyError, TypeError) as exc:
-                    print("Pet bot update failed (%s): %s." %\n                          (type(exc).__name__, safe_error_message(exc)), flush=True)
+                    print("Pet bot update failed (%s): %s." %
+                          (type(exc).__name__, safe_error_message(exc)), flush=True)
         except Exception as exc:
-            print("Pet bot polling error (%s); retrying in %ss." %
-                  (type(exc).__name__, backoff), flush=True)
+            print("Pet bot polling error (%s): %s; retrying in %ss." %
+                  (type(exc).__name__, safe_error_message(exc), backoff), flush=True)
             time.sleep(backoff)
             backoff = min(backoff * 2, 30)
 
@@ -338,8 +339,8 @@ def start_pet_bot():
         init_pet_db()
     except (sqlite3.Error, OSError) as exc:
         # Don't take down the dashboard if storage is unavailable.
-        print("Pet database initialization failed (%s); bot is disabled for this run." %
-              type(exc).__name__, flush=True)
+        print("Pet database initialization failed (%s): %s; bot is disabled for this run." %
+              (type(exc).__name__, safe_error_message(exc)), flush=True)
         return
     thread = threading.Thread(target=bot_polling_loop, name="telegram-pet-bot", daemon=True)
     thread.start()
