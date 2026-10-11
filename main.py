@@ -799,7 +799,7 @@ def handle_pet_callback(callback):
         state, reaction = pet_db_action(user_id, data)
         if not state:
             return
-        if data in ("pet", "feed"):
+        if data in ("pet", "feed") and reaction and not reaction.startswith(("Сейчас", "Мы уже", "Я слишком")):
             reactions = PET_REACTIONS.get(state["character_type"], PET_REACTIONS["dog"])
             reaction = random.choice(reactions[data]).format(name=state["pet_name"])
         if chat_id is not None and message_id is not None:
@@ -816,11 +816,46 @@ def handle_pet_callback(callback):
         return
 
     if data == "new":
+        existing = pet_get_active(user_id, create_if_missing=False)
+        if existing:
+            if chat_id is not None and message_id is not None:
+                telegram_edit_with_retry({
+                    "chat_id": chat_id, "message_id": message_id,
+                    "text": "У тебя уже есть персонаж «%s». Новый персонаж заменит его, а старый будет удалён без возможности восстановления. Создаём нового?" % existing["pet_name"],
+                    "reply_markup": {"inline_keyboard": [[
+                        {"text": "🗑 Да, удалить и создать", "callback_data": "replace_yes"},
+                        {"text": "↩️ Нет, оставить", "callback_data": "replace_no"}
+                    ]]}
+                }, timeout=12)
+            return
         if chat_id is not None and message_id is not None:
             telegram_edit_with_retry({
-                "chat_id": chat_id,
-                "message_id": message_id,
+                "chat_id": chat_id, "message_id": message_id,
                 "text": "Кого создадим? Выбери тип персонажа:",
+                "reply_markup": character_keyboard()
+            }, timeout=12)
+        return
+
+    if data == "replace_no":
+        state = pet_get_active(user_id, create_if_missing=False)
+        if chat_id is not None and message_id is not None:
+            telegram_edit_with_retry({
+                "chat_id": chat_id, "message_id": message_id,
+                "text": ("Хорошо, «%s» остаётся с тобой. Ничего не изменено." % state["pet_name"]) if state else "Хорошо, ничего не изменено.",
+                "reply_markup": pet_keyboard() if state else character_keyboard()
+            }, timeout=12)
+        return
+
+    if data == "replace_yes":
+        with sqlite3.connect(str(DB_PATH), timeout=10) as db:
+            db.execute("DELETE FROM pet_action_cooldowns WHERE pet_id IN (SELECT id FROM pet_characters WHERE user_id = ?)", (int(user_id),))
+            db.execute("DELETE FROM pet_characters WHERE user_id = ?", (int(user_id),))
+            db.execute("DELETE FROM pet_preferences WHERE user_id = ?", (int(user_id),))
+            db.commit()
+        if chat_id is not None and message_id is not None:
+            telegram_edit_with_retry({
+                "chat_id": chat_id, "message_id": message_id,
+                "text": "Текущий персонаж удалён. Теперь выбери нового:",
                 "reply_markup": character_keyboard()
             }, timeout=12)
         return
@@ -828,6 +863,14 @@ def handle_pet_callback(callback):
     if data.startswith("create:"):
         kind = data.split(":", 1)[1]
         if kind not in CHARACTER_TYPES:
+            return
+        existing = pet_get_active(user_id, create_if_missing=False)
+        if existing:
+            if chat_id is not None:
+                telegram_call("sendMessage", {
+                    "chat_id": chat_id,
+                    "text": "У тебя уже есть персонаж. Нажми «Создать» и подтверди замену либо оставь текущего."
+                }, timeout=12)
             return
         CREATE_PENDING[int(user_id)] = kind
         if chat_id is not None:
