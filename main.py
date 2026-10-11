@@ -438,7 +438,7 @@ def pet_action_desire(state, action):
     if action == "sleep" and energy <= 55:
         return "Я устал и хочу отдохнуть."
     if action == "walk" and energy < 10:
-        return "Я слишком устал для прогулки. Сначала нужно восстановить хотя бы 10 энергии."
+        return None
     if action == "walk" and energy >= 10 and mood <= 75:
         return "Хочу размяться и исследовать мир!"
     if action == "play" and mood <= 70 and energy >= 25:
@@ -469,6 +469,8 @@ def pet_db_action(user_id, action=None):
     state = pet_apply_needs_decay(user_id) or pet_get_active(user_id, create_if_missing=False)
     if not state:
         return None, "Сначала создай персонажа."
+    if action == "walk" and int(state.get("energy", 0)) < 10:
+        return state, "Я слишком устал для прогулки. Сначала нужно восстановить хотя бы 10 энергии."
     desire = pet_action_desire(state, action)
     if not desire:
         return state, "Сейчас мне этого не хочется.\\n\\n" + pet_desires_text(state)
