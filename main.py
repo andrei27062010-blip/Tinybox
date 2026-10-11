@@ -422,19 +422,74 @@ def pet_apply_needs_decay(user_id):
     return pet_get_active(user_id, create_if_missing=False)
 
 
+ACTION_COOLDOWN_SECONDS = 20 * 60
+
+
+def pet_action_desire(state, action):
+    food = int(state.get("food", 0))
+    water = int(state.get("water", 0))
+    energy = int(state.get("energy", 0))
+    clean = int(state.get("cleanliness", 0))
+    mood = int(state.get("happiness", 0))
+    if action == "feed" and food <= 65:
+        return "Я проголодался — самое время перекусить."
+    if action == "water" and water <= 60:
+        return "Хочу пить. Принеси, пожалуйста, воды."
+    if action == "sleep" and energy <= 55:
+        return "Я устал и хочу отдохнуть."
+    if action == "walk" and energy < 10:
+        return "Я слишком устал для прогулки. Сначала нужно восстановить хотя бы 10 энергии."
+    if action == "walk" and energy >= 10 and mood <= 75:
+        return "Хочу размяться и исследовать мир!"
+    if action == "play" and mood <= 70 and energy >= 25:
+        return "Мне скучно! Давай поиграем."
+    if action == "wash" and clean <= 60:
+        return "Кажется, пора помыться."
+    if action == "pet" and mood <= 75:
+        return "Мне не хватает внимания и ласки."
+    return None
+
+
+def pet_desires_text(state):
+    desires = []
+    for action, label in (
+        ("feed", "поесть"), ("water", "попить"), ("sleep", "поспать"),
+        ("walk", "погулять"), ("play", "поиграть"), ("wash", "помыться"),
+        ("pet", "получить ласку")
+    ):
+        if pet_action_desire(state, action):
+            desires.append(label)
+    if not desires:
+        return "💭 Желания: сейчас я доволен и не прошу ничего особенного."
+    return "💭 Хочу: " + ", ".join(desires) + "."
+
+
 def pet_db_action(user_id, action=None):
     """Apply an activity, update needs and grant experience."""
-    state = pet_apply_needs_decay(user_id) or pet_get_active(user_id)
+    state = pet_apply_needs_decay(user_id) or pet_get_active(user_id, create_if_missing=False)
     if not state:
-        return None, None
+        return None, "Сначала создай персонажа."
+    desire = pet_action_desire(state, action)
+    if not desire:
+        return state, "Сейчас мне этого не хочется.\\n\\n" + pet_desires_text(state)
+    now = int(time.time())
+    with sqlite3.connect(str(DB_PATH), timeout=10) as db:
+        previous = db.execute(
+            "SELECT last_at FROM pet_action_cooldowns WHERE pet_id = ? AND action = ?",
+            (state["id"], action)
+        ).fetchone()
+        if previous and now - int(previous[0]) < ACTION_COOLDOWN_SECONDS:
+            remaining = ACTION_COOLDOWN_SECONDS - (now - int(previous[0]))
+            minutes = max(1, (remaining + 59) // 60)
+            return state, "Мы уже занимались этим недавно. Попробуй снова примерно через %s мин.\\n\\n%s" % (minutes, pet_desires_text(state))
     effects = {
-        "pet": {"happiness": 8, "xp": 5},
-        "feed": {"food": 25, "happiness": 2, "xp": 8},
-        "water": {"water": 30, "xp": 6},
-        "sleep": {"energy": 45, "happiness": 2, "xp": 7},
-        "walk": {"happiness": 12, "energy": -18, "cleanliness": -8, "xp": 12},
-        "wash": {"cleanliness": 35, "happiness": -2, "xp": 6},
-        "play": {"happiness": 15, "energy": -15, "xp": 10},
+        "pet": {"happiness": 8, "xp": 4},
+        "feed": {"food": 25, "happiness": 2, "xp": 6},
+        "water": {"water": 30, "xp": 5},
+        "sleep": {"energy": 45, "happiness": 2, "xp": 5},
+        "walk": {"happiness": 12, "energy": -18, "cleanliness": -8, "xp": 8},
+        "wash": {"cleanliness": 35, "happiness": -2, "xp": 4},
+        "play": {"happiness": 15, "energy": -15, "xp": 7},
     }.get(action)
     if not effects:
         return state, None
@@ -450,16 +505,28 @@ def pet_db_action(user_id, action=None):
         params.append(abs(amount))
     xp_gain = effects.get("xp", 0)
     assignments.extend(["xp = xp + ?", "last_needs_update = ?", "updated_at = CURRENT_TIMESTAMP"])
-    params.extend([xp_gain, int(time.time()), state["id"], int(user_id)])
+    params.extend([xp_gain, now, state["id"], int(user_id)])
     with sqlite3.connect(str(DB_PATH), timeout=10) as db:
+        current = db.execute(
+            "SELECT energy FROM pet_characters WHERE id = ? AND user_id = ?",
+            (state["id"], int(user_id))
+        ).fetchone()
+        if not current:
+            return None, None
+        if action == "walk" and int(current[0]) < 10:
+            return state, "Я слишком устал для прогулки. Сначала нужно восстановить энергию."
         db.execute("UPDATE pet_characters SET " + ", ".join(assignments) +
                    " WHERE id = ? AND user_id = ?", params)
+        db.execute("""
+            INSERT INTO pet_action_cooldowns(pet_id, action, last_at) VALUES (?, ?, ?)
+            ON CONFLICT(pet_id, action) DO UPDATE SET last_at = excluded.last_at
+        """, (state["id"], action, now))
         db.commit()
         level, xp = db.execute(
             "SELECT level, xp FROM pet_characters WHERE id = ? AND user_id = ?",
             (state["id"], int(user_id))
         ).fetchone()
-        while xp >= level * 100:
+        while xp >= level * 150:
             xp -= level * 100
             level += 1
         db.execute("UPDATE pet_characters SET level = ?, xp = ? WHERE id = ? AND user_id = ?",
@@ -679,7 +746,7 @@ def pet_message(state, greeting=False, reaction=None):
     xp = int(state.get("xp", 0))
     return (
         title + "\n"
-        + "⭐ Уровень: %s · Опыт: %s/%s\n\n" % (level, xp, level * 100)
+        + "⭐ Уровень: %s · Опыт: %s/%s\n\n" % (level, xp, level * 150)
         + reaction_line
         + personalities.get(state.get("character_type"), personalities["dog"]) + "\n\n"
         + "🍗 Сытость: %s/100\n" % state.get("food", 75)
