@@ -3,6 +3,8 @@
 import json
 import os
 import platform
+import sqlite3
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -186,8 +188,178 @@ def check_telegram_connectivity():
 
 
 
+
+# --- Tiny pet Telegram bot (optional; enabled only when BOT_TOKEN is configured) ---
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+DB_PATH = Path(os.environ.get("PET_DB_PATH", str(ROOT / "data" / "pets.sqlite3"))).expanduser()
+TELEGRAM_API = "https://api.telegram.org/bot" + BOT_TOKEN
+
+
+def init_pet_db():
+    """Create the database directory and schema on first run; keep existing data."""
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(str(DB_PATH), timeout=10) as db:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS pets (
+                user_id INTEGER PRIMARY KEY,
+                pet_name TEXT NOT NULL DEFAULT 'Бублик',
+                food INTEGER NOT NULL DEFAULT 3,
+                happiness INTEGER NOT NULL DEFAULT 3,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        db.commit()
+    print("Pet database ready at %s" % DB_PATH, flush=True)
+
+
+def pet_db_action(user_id, action=None):
+    """Apply an action and return the current pet state. Each call uses a short-lived connection."""
+    with sqlite3.connect(str(DB_PATH), timeout=10) as db:
+        db.row_factory = sqlite3.Row
+        db.execute(
+            "INSERT OR IGNORE INTO pets (user_id) VALUES (?)",
+            (int(user_id),)
+        )
+        if action == "pet":
+            db.execute("""
+                UPDATE pets SET happiness = MIN(10, happiness + 1),
+                    updated_at = CURRENT_TIMESTAMP WHERE user_id = ?
+            """, (int(user_id),))
+        elif action == "feed":
+            db.execute("""
+                UPDATE pets SET food = MIN(10, food + 1),
+                    happiness = MIN(10, happiness + 1),
+                    updated_at = CURRENT_TIMESTAMP WHERE user_id = ?
+            """, (int(user_id),))
+        db.commit()
+        row = db.execute(
+            "SELECT pet_name, food, happiness FROM pets WHERE user_id = ?",
+            (int(user_id),)
+        ).fetchone()
+        return dict(row)
+
+
+def telegram_call(method, payload=None, timeout=40):
+    """Call the Bot API; never log the token or the full API URL."""
+    url = TELEGRAM_API + "/" + method
+    data = json.dumps(payload or {}).encode("utf-8")
+    request = Request(url, data=data, headers={"Content-Type": "application/json"},
+                      method="POST")
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
+        raise RuntimeError("%s request failed: %s" % (method, type(exc).__name__)) from exc
+    if not result.get("ok"):
+        # Telegram's response description is useful but avoid echoing credentials.
+        raise RuntimeError("%s returned an API error: %s" %
+                           (method, result.get("description", "unknown error")))
+    return result.get("result")
+
+
+def pet_keyboard():
+    return {"inline_keyboard": [[
+        {"text": "🐾 Погладить", "callback_data": "pet"},
+        {"text": "🍖 Покормить", "callback_data": "feed"}
+    ]]}
+
+
+def pet_message(state, greeting=False):
+    title = "🐶 Знакомься, %s!" % state["pet_name"] if greeting else "🐶 %s" % state["pet_name"]
+    return (
+        title + "\n\n"
+        + "🍖 Сытость: %s/10\n" % state["food"]
+        + "💖 Настроение: %s/10\n\n" % state["happiness"]
+        + "Нажимай кнопки, чтобы заботиться о своём питомце."
+    )
+
+
+def handle_pet_update(update):
+    callback = update.get("callback_query")
+    if callback:
+        data = callback.get("data", "")
+        message = callback.get("message") or {}
+        chat = message.get("chat") or {}
+        user = callback.get("from") or {}
+        user_id = user.get("id")
+        if not user_id or data not in ("pet", "feed"):
+            telegram_call("answerCallbackQuery", {"callback_query_id": callback["id"]})
+            return
+        state = pet_db_action(user_id, data)
+        telegram_call("answerCallbackQuery", {"callback_query_id": callback["id"]})
+        if chat.get("id") is not None and message.get("message_id") is not None:
+            telegram_call("editMessageText", {
+                "chat_id": chat["id"],
+                "message_id": message["message_id"],
+                "text": pet_message(state),
+                "reply_markup": pet_keyboard()
+            })
+        return
+
+    message = update.get("message") or update.get("edited_message") or {}
+    text_value = (message.get("text") or "").strip()
+    chat = message.get("chat") or {}
+    user = message.get("from") or {}
+    if not chat.get("id") or not user.get("id"):
+        return
+    if text_value.startswith("/start") or text_value.startswith("/newpet"):
+        state = pet_db_action(user["id"])
+        telegram_call("sendMessage", {
+            "chat_id": chat["id"],
+            "text": pet_message(state, greeting=True),
+            "reply_markup": pet_keyboard()
+        })
+    elif text_value.startswith("/help"):
+        telegram_call("sendMessage", {
+            "chat_id": chat["id"],
+            "text": "Команды:\n/start — познакомиться с питомцем\n/help — помощь\n\nУхаживай за питомцем кнопками под сообщением."
+        })
+
+
+def bot_polling_loop():
+    """Long-poll updates in a background thread so the web dashboard stays available."""
+    print("Telegram pet bot polling thread started.", flush=True)
+    offset = None
+    backoff = 2
+    while True:
+        try:
+            payload = {"timeout": 30, "allowed_updates": ["message", "callback_query"]}
+            if offset is not None:
+                payload["offset"] = offset
+            updates = telegram_call("getUpdates", payload, timeout=40) or []
+            backoff = 2
+            for update in updates:
+                offset = max(offset or 0, int(update.get("update_id", 0)) + 1)
+                try:
+                    handle_pet_update(update)
+                except (RuntimeError, sqlite3.Error, OSError, ValueError, KeyError, TypeError) as exc:
+                    print("Pet bot update failed (%s)." % type(exc).__name__, flush=True)
+        except Exception as exc:
+            print("Pet bot polling error (%s); retrying in %ss." %
+                  (type(exc).__name__, backoff), flush=True)
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 30)
+
+
+def start_pet_bot():
+    if not BOT_TOKEN:
+        print("BOT_TOKEN is not set; Telegram bot is disabled. Web dashboard remains active.", flush=True)
+        return
+    try:
+        init_pet_db()
+    except (sqlite3.Error, OSError) as exc:
+        # Don't take down the dashboard if storage is unavailable.
+        print("Pet database initialization failed (%s); bot is disabled for this run." %
+              type(exc).__name__, flush=True)
+        return
+    thread = threading.Thread(target=bot_polling_loop, name="telegram-pet-bot", daemon=True)
+    thread.start()
+
+
 def main():
     check_telegram_connectivity()
+    start_pet_bot()
     raw_port = os.environ.get("PORT", "8080").strip()
     try:
         port = int(raw_port)
