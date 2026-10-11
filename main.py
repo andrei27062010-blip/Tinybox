@@ -230,7 +230,7 @@ def init_pet_db():
                 cur = db.execute("""
                     INSERT INTO pet_characters
                         (user_id, character_type, pet_name, food, happiness, created_at, updated_at)
-                    VALUES (?, 'dog', ?, ?, ?, ?, ?)
+                    VALUES (?, 'dog', ?, MIN(100, ? * 10), MIN(100, ? * 10), ?, ?)
                 """, row)
                 db.execute("""
                     INSERT OR IGNORE INTO pet_preferences(user_id, active_pet_id)
@@ -599,10 +599,23 @@ def handle_pet_callback(callback):
     chat_id = chat.get("id")
     message_id = message.get("message_id")
 
-    if data == "pet" or data == "feed":
-        state = pet_db_action(user_id, data)
-        reactions = PET_REACTIONS.get(state["character_type"], PET_REACTIONS["dog"])
-        reaction = random.choice(reactions[data]).format(name=state["pet_name"])
+    # Any other button press cancels an unfinished character creation, then
+    # the clicked action continues normally.
+    if int(user_id) in CREATE_PENDING:
+        CREATE_PENDING.pop(int(user_id), None)
+        if chat_id is not None:
+            telegram_call("sendMessage", {
+                "chat_id": chat_id,
+                "text": "Создание персонажа отменено."
+            }, timeout=12)
+
+    if data in ("pet", "feed", "water", "sleep", "walk", "wash", "play"):
+        state, reaction = pet_db_action(user_id, data)
+        if not state:
+            return
+        if data in ("pet", "feed"):
+            reactions = PET_REACTIONS.get(state["character_type"], PET_REACTIONS["dog"])
+            reaction = random.choice(reactions[data]).format(name=state["pet_name"])
         if chat_id is not None and message_id is not None:
             try:
                 telegram_edit_with_retry({
@@ -630,12 +643,11 @@ def handle_pet_callback(callback):
         kind = data.split(":", 1)[1]
         if kind not in CHARACTER_TYPES:
             return
-        state = pet_create(user_id, kind)
-        if chat_id is not None and message_id is not None:
-            telegram_edit_with_retry({
-                "chat_id": chat_id, "message_id": message_id,
-                "text": pet_message(state, greeting=True) + "\n\nНажми «Переименовать», чтобы дать персонажу своё имя.",
-                "reply_markup": pet_keyboard()
+        CREATE_PENDING[int(user_id)] = kind
+        if chat_id is not None:
+            telegram_call("sendMessage", {
+                "chat_id": chat_id,
+                "text": "Как назовём персонажа? Отправь имя сообщением (до 24 символов). Если нажмёшь другую кнопку или команду, создание отменится."
             }, timeout=12)
         return
 
@@ -746,14 +758,42 @@ def handle_pet_update(update):
     user_id = int(user["id"])
     command = text_value.split()[0].split("@", 1)[0].lower() if text_value else ""
 
-    if command == "/start":
-        state = pet_get_active(user_id, create_if_missing=False)
-        if not state:
-            state = pet_create(user_id, "dog")
+    if command.startswith("/") and user_id in CREATE_PENDING:
+        CREATE_PENDING.pop(user_id, None)
+        telegram_call("sendMessage", {
+            "chat_id": chat["id"],
+            "text": "Создание персонажа отменено."
+        }, timeout=12)
+
+    if text_value and not text_value.startswith("/") and user_id in CREATE_PENDING:
+        kind = CREATE_PENDING.pop(user_id)
+        state = pet_create(user_id, kind, text_value)
+        if state:
             telegram_call("sendMessage", {
                 "chat_id": chat["id"],
-                "text": "🐾 Добро пожаловать! Твой первый персонаж уже готов."
-            })
+                "text": "🎉 Знакомься! Твой персонаж создан. Забота о нём приносит опыт и помогает повышать уровень."
+            }, timeout=12)
+            send_pet_card(chat["id"], state, greeting=True)
+        else:
+            telegram_call("sendMessage", {
+                "chat_id": chat["id"],
+                "text": "Имя не должно быть пустым. Выбери «Создать» и попробуй ещё раз."
+            }, timeout=12)
+        return
+
+    if command == "/start":
+        state = pet_apply_needs_decay(user_id)
+        if not state:
+            telegram_call("sendMessage", {
+                "chat_id": chat["id"],
+                "text": "🐾 Добро пожаловать! Сначала выбери персонажа, а затем придумай ему имя."
+            }, timeout=12)
+            telegram_call("sendMessage", {
+                "chat_id": chat["id"],
+                "text": "Кого создадим?",
+                "reply_markup": character_keyboard()
+            }, timeout=12)
+            return
         send_pet_card(chat["id"], state, greeting=True)
     elif command == "/help":
         telegram_call("sendMessage", {
@@ -765,6 +805,27 @@ def handle_pet_update(update):
                 "Доступные команды: /start и /help."
             )
         })
+    elif command.startswith("/") and user_id in RENAME_PENDING:
+        RENAME_PENDING.discard(user_id)
+        telegram_call("sendMessage", {
+            "chat_id": chat["id"],
+            "text": "Переименование отменено."
+        }, timeout=12)
+        if command == "/help":
+            telegram_call("sendMessage", {
+                "chat_id": chat["id"],
+                "text": "Управляй питомцами кнопками под карточкой. Доступны /start и /help."
+            }, timeout=12)
+        elif command == "/start":
+            state = pet_apply_needs_decay(user_id)
+            if state:
+                send_pet_card(chat["id"], state, greeting=True)
+            else:
+                telegram_call("sendMessage", {
+                    "chat_id": chat["id"],
+                    "text": "Сначала выбери персонажа и придумай ему имя.",
+                    "reply_markup": character_keyboard()
+                }, timeout=12)
     elif text_value and user_id in RENAME_PENDING and not text_value.startswith("/"):
         RENAME_PENDING.discard(user_id)
         state = pet_rename(user_id, text_value)
