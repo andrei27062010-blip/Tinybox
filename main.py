@@ -240,6 +240,14 @@ def pet_db_action(user_id, action=None):
         return dict(row)
 
 
+def safe_error_message(exc):
+    """Return a useful error detail without ever printing the bot token."""
+    message = str(exc) or type(exc).__name__
+    if BOT_TOKEN:
+        message = message.replace(BOT_TOKEN, "[REDACTED]")
+    return message[:300]
+
+
 def telegram_call(method, payload=None, timeout=40):
     """Call the Bot API; never log the token or the full API URL."""
     url = TELEGRAM_API + "/" + method
@@ -334,7 +342,7 @@ def bot_polling_loop():
                 try:
                     handle_pet_update(update)
                 except (RuntimeError, sqlite3.Error, OSError, ValueError, KeyError, TypeError) as exc:
-                    print("Pet bot update failed (%s)." % type(exc).__name__, flush=True)
+                    print("Pet bot update failed (%s): %s." %\n                          (type(exc).__name__, safe_error_message(exc)), flush=True)
         except Exception as exc:
             print("Pet bot polling error (%s); retrying in %ss." %
                   (type(exc).__name__, backoff), flush=True)
