@@ -174,6 +174,7 @@ class Handler(BaseHTTPRequestHandler):
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 DB_PATH = Path(os.environ.get("PET_DB_PATH", str(ROOT / "data" / "pets.sqlite3"))).expanduser()
 TELEGRAM_API = "https://api.telegram.org/bot" + BOT_TOKEN
+RENAME_PENDING = set()
 
 
 def init_pet_db():
@@ -597,7 +598,7 @@ def handle_pet_callback(callback):
         if chat_id is not None and message_id is not None:
             telegram_call("editMessageText", {
                 "chat_id": chat_id, "message_id": message_id,
-                "text": pet_message(state, greeting=True) + "\n\nЧтобы дать имя, отправь /rename НовоеИмя",
+                "text": pet_message(state, greeting=True) + "\n\nНажми «Переименовать», чтобы дать персонажу своё имя.",
                 "reply_markup": pet_keyboard()
             }, timeout=12)
         return
@@ -629,10 +630,12 @@ def handle_pet_callback(callback):
 
     if data == "rename_help":
         state = pet_get_active(user_id, create_if_missing=False)
-        text = ("Отправь команду /rename НовоеИмя\n"
-                "Имя может содержать пробелы и быть длиной до 24 символов.")
+        text = ("Напиши новое имя следующим сообщением.\n"
+                "Можно использовать пробелы, длина — до 24 символов.")
         if not state:
             text = "Сначала создай персонажа кнопкой «Создать»."
+        else:
+            RENAME_PENDING.add(int(user_id))
         if chat_id is not None:
             telegram_call("sendMessage", {"chat_id": chat_id, "text": text}, timeout=12)
         return
@@ -704,85 +707,44 @@ def handle_pet_update(update):
     if not chat.get("id") or not user.get("id"):
         return
 
+    user_id = int(user["id"])
     command = text_value.split()[0].split("@", 1)[0].lower() if text_value else ""
-    args = text_value.split(maxsplit=1)[1].strip() if len(text_value.split(maxsplit=1)) > 1 else ""
 
     if command == "/start":
-        state = pet_get_active(user["id"], create_if_missing=False)
+        state = pet_get_active(user_id, create_if_missing=False)
         if not state:
-            state = pet_create(user["id"], "dog")
-            send_pet_card(chat["id"], state, greeting=True)
+            state = pet_create(user_id, "dog")
             telegram_call("sendMessage", {
                 "chat_id": chat["id"],
-                "text": "Это твой первый персонаж! Можешь создать котика или лисёнка кнопкой «Создать», а имя изменить командой /rename НовоеИмя."
+                "text": "🐾 Добро пожаловать! Твой первый персонаж уже готов."
             })
-        else:
-            send_pet_card(chat["id"], state, greeting=True)
-    elif command == "/newpet":
-        if args:
-            pieces = args.split(maxsplit=1)
-            kind = pieces[0].lower()
-            aliases = {"dog": "dog", "собака": "dog", "пёс": "dog",
-                       "cat": "cat", "кот": "cat", "кошка": "cat",
-                       "fox": "fox", "лиса": "fox", "лис": "fox"}
-            kind = aliases.get(kind, kind)
-            if kind not in CHARACTER_TYPES:
-                telegram_call("sendMessage", {
-                    "chat_id": chat["id"],
-                    "text": "Типы персонажей: dog (собака), cat (кот), fox (лис). Например: /newpet cat Плюша"
-                })
-                return
-            name = pieces[1] if len(pieces) > 1 else None
-            state = pet_create(user["id"], kind, name)
-            send_pet_card(chat["id"], state, greeting=True)
-        else:
-            telegram_call("sendMessage", {
-                "chat_id": chat["id"], "text": "Кого создадим? Выбери тип персонажа:",
-                "reply_markup": character_keyboard()
-            })
-    elif command in ("/choose", "/mypets"):
-        characters = pet_list(user["id"])
-        telegram_call("sendMessage", {
-            "chat_id": chat["id"],
-            "text": "Твои персонажи — выбери активного:" if characters else "У тебя пока нет персонажей. Создадим первого?",
-            "reply_markup": pet_list_keyboard(user["id"])
-        })
-    elif command == "/rename":
-        if not args:
-            telegram_call("sendMessage", {
-                "chat_id": chat["id"], "text": "Использование: /rename Новое имя"
-            })
-            return
-        state = pet_rename(user["id"], args)
-        if state:
-            send_pet_card(chat["id"], state)
-        else:
-            telegram_call("sendMessage", {
-                "chat_id": chat["id"], "text": "Сначала создай персонажа командой /newpet."
-            })
-    elif command == "/delete":
-        state = pet_get_active(user["id"], create_if_missing=False)
-        if state:
-            telegram_call("sendMessage", {
-                "chat_id": chat["id"],
-                "text": "Точно удалить персонажа «%s»?" % state["pet_name"],
-                "reply_markup": delete_keyboard(state)
-            })
-        else:
-            telegram_call("sendMessage", {
-                "chat_id": chat["id"], "text": "У тебя пока нет персонажей."
-            })
+        send_pet_card(chat["id"], state, greeting=True)
     elif command == "/help":
         telegram_call("sendMessage", {
             "chat_id": chat["id"],
             "text": (
-                "Команды:\n/start — открыть активного персонажа\n"
-                "/newpet — создать персонажа\n/newpet cat Плюша — создать кота с именем\n"
-                "/mypets — список и выбор персонажа\n/rename НовоеИмя — переименовать активного\n"
-                "/delete — удалить активного персонажа\n/help — помощь\n\n"
-                "У собаки, кота и лисёнка свои реплики. Прогресс и имя каждого персонажа сохраняются отдельно."
+                "Управляй питомцами кнопками под карточкой персонажа.\\n\\n"
+                "Создавай персонажей, выбирай активного, меняй имя и удаляй их "
+                "через кнопки. У каждого свой характер и отдельные показатели.\\n\\n"
+                "Доступные команды: /start и /help."
             )
         })
+    elif text_value and user_id in RENAME_PENDING and not text_value.startswith("/"):
+        RENAME_PENDING.discard(user_id)
+        state = pet_rename(user_id, text_value)
+        if state:
+            send_pet_card(chat["id"], state)
+        else:
+            telegram_call("sendMessage", {
+                "chat_id": chat["id"],
+                "text": "Имя не должно быть пустым. Нажми «Переименовать» и попробуй ещё раз."
+            })
+    elif text_value and user_id in RENAME_PENDING and text_value.startswith("/"):
+        telegram_call("sendMessage", {
+            "chat_id": chat["id"],
+            "text": "Сначала отправь новое имя обычным сообщением или нажми /help."
+        })
+
 
 def bot_polling_loop():
     """Long-poll updates in a background thread so the web dashboard stays available."""
@@ -810,6 +772,14 @@ def bot_polling_loop():
             backoff = min(backoff * 2, 30)
 
 
+def register_bot_commands():
+    """Expose only the two intended commands in Telegram's command menu."""
+    telegram_call("setMyCommands", {"commands": [
+        {"command": "start", "description": "Открыть питомца"},
+        {"command": "help", "description": "Помощь"}
+    ]}, timeout=12)
+
+
 def start_pet_bot():
     if not BOT_TOKEN:
         print("BOT_TOKEN is not set; Telegram bot is disabled. Web dashboard remains active.", flush=True)
@@ -821,6 +791,10 @@ def start_pet_bot():
         print("Pet database initialization failed (%s): %s; bot is disabled for this run." %
               (type(exc).__name__, safe_error_message(exc)), flush=True)
         return
+    try:
+        register_bot_commands()
+    except RuntimeError as exc:
+        print("Pet bot command menu setup failed: %s" % safe_error_message(exc), flush=True)
     thread = threading.Thread(target=bot_polling_loop, name="telegram-pet-bot", daemon=True)
     thread.start()
 
