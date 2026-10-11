@@ -3,6 +3,7 @@
 import json
 import os
 import platform
+import random
 import sqlite3
 import threading
 import time
@@ -253,10 +254,30 @@ def pet_keyboard():
     ]]}
 
 
-def pet_message(state, greeting=False):
+PET_REACTIONS = {
+    "pet": [
+        "🥰 Бублик довольно виляет хвостиком!",
+        "🐾 Бублик подставил ушко: почеши ещё!",
+        "💖 Бублик прижался к твоей руке.",
+        "🐶 Гав-гав! Кажется, Бублик счастлив!",
+        "✨ Бублик перевернулся на спинку и просит ещё ласки!"
+    ],
+    "feed": [
+        "😋 Ням-ням! Бублик уплетает угощение!",
+        "🍖 Бублик радостно подпрыгнул от запаха еды!",
+        "🐕 Бублик всё съел и довольно облизывается.",
+        "❤️ Бублик благодарно смотрит на тебя.",
+        "🌟 Вкусняшка пришлась Бублику по душе!"
+    ]
+}
+
+
+def pet_message(state, greeting=False, reaction=None):
     title = "🐶 Знакомься, %s!" % state["pet_name"] if greeting else "🐶 %s" % state["pet_name"]
+    reaction_line = (reaction + "\n\n") if reaction else ""
     return (
         title + "\n\n"
+        + reaction_line
         + "🍖 Сытость: %s/10\n" % state["food"]
         + "💖 Настроение: %s/10\n\n" % state["happiness"]
         + "Нажимай кнопки, чтобы заботиться о своём питомце."
@@ -275,12 +296,13 @@ def handle_pet_update(update):
             telegram_call("answerCallbackQuery", {"callback_query_id": callback["id"]})
             return
         state = pet_db_action(user_id, data)
+        reaction = random.choice(PET_REACTIONS[data])
         telegram_call("answerCallbackQuery", {"callback_query_id": callback["id"]})
         if chat.get("id") is not None and message.get("message_id") is not None:
             telegram_call("editMessageText", {
                 "chat_id": chat["id"],
                 "message_id": message["message_id"],
-                "text": pet_message(state),
+                "text": pet_message(state, reaction=reaction),
                 "reply_markup": pet_keyboard()
             })
         return
