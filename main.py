@@ -394,18 +394,21 @@ def pet_delete(user_id, pet_id=None):
 
 
 def pet_apply_needs_decay(user_id):
-    """Gently lower needs while a pet is unattended; absence is not fatal."""
+    """Apply gentle real-time need decay, capped at one day and never to energy."""
     state = pet_get_active(user_id, create_if_missing=False)
     if not state:
         return None
     now = int(time.time())
     last = int(state.get("last_needs_update") or now)
-    elapsed = max(0, min(now - last, 30 * 24 * 3600))
-    food_loss = elapsed // (6 * 3600)
-    water_loss = elapsed // (4 * 3600)
-    mood_loss = elapsed // (12 * 3600)
-    clean_loss = elapsed // (10 * 3600)
+    raw_elapsed = max(0, now - last)
+    elapsed = min(raw_elapsed, 24 * 3600)
+    elapsed_hours = elapsed // 3600
+    food_loss = (elapsed_hours // 4) * 5
+    water_loss = (elapsed_hours // 3) * 5
+    mood_loss = (elapsed_hours // 7) * 4
+    clean_loss = (elapsed_hours // 9) * 4
     if food_loss or water_loss or mood_loss or clean_loss:
+        next_update = now if raw_elapsed > 24 * 3600 else last + elapsed_hours * 3600
         with sqlite3.connect(str(DB_PATH), timeout=10) as db:
             db.execute("""
                 UPDATE pet_characters
@@ -417,7 +420,12 @@ def pet_apply_needs_decay(user_id):
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND user_id = ?
             """, (int(food_loss), int(water_loss), int(mood_loss), int(clean_loss),
-                  now, state["id"], int(user_id)))
+                  next_update, state["id"], int(user_id)))
+            db.commit()
+    elif raw_elapsed > 24 * 3600:
+        with sqlite3.connect(str(DB_PATH), timeout=10) as db:
+            db.execute("UPDATE pet_characters SET last_needs_update = ? WHERE id = ? AND user_id = ?",
+                       (now, state["id"], int(user_id)))
             db.commit()
     return pet_get_active(user_id, create_if_missing=False)
 
@@ -529,7 +537,7 @@ def pet_db_action(user_id, action=None):
             (state["id"], int(user_id))
         ).fetchone()
         while xp >= level * 150:
-            xp -= level * 100
+            xp -= level * 150
             level += 1
         db.execute("UPDATE pet_characters SET level = ?, xp = ? WHERE id = ? AND user_id = ?",
                    (level, xp, state["id"], int(user_id)))
@@ -754,10 +762,15 @@ def pet_message(state, greeting=False, reaction=None):
         + "🍗 Сытость: %s/100\n" % state.get("food", 75)
         + "💧 Вода: %s/100\n" % state.get("water", 70)
         + "😊 Настроение: %s/100\n" % state.get("happiness", 70)
-        + "⚡ Энергия: %s/100\n" % state.get("energy", 80)
-        + "🫧 Чистота: %s/100\n\n" % state.get("cleanliness", 75)
-        + "Каждое действие даёт опыт. Заботься обо мне, чтобы повышать уровень!"
-    )
+        + "⚡ Энергия: %s/100\\n" % state.get("energy", 80)
+        + "🫧 Чистота: %s/100\\n\\n" % state.get("cleanliness", 75)
+        + pet_desires_text(state) + "\\n\\n"
+        + "🍗 Сытость снижается на 5 каждые 4 ч.\\n"
+        + "💧 Вода — на 5 каждые 3 ч.\\n"
+        + "😊 Настроение — на 4 каждые 7 ч.\\n"
+        + "🫧 Чистота — на 4 каждые 9 ч.\\n"
+        + "⚡ Энергия сама не падает — только от занятий.\\n\\n"
+        + "Каждое действие даёт опыт. Заботься обо мне, чтобы повышать уровень!"    )
 
 
 def send_pet_card(chat_id, state, greeting=False, reaction=None):
