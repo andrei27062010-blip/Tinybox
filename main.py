@@ -175,6 +175,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 DB_PATH = Path(os.environ.get("PET_DB_PATH", str(ROOT / "data" / "pets.sqlite3"))).expanduser()
 TELEGRAM_API = "https://api.telegram.org/bot" + BOT_TOKEN
 RENAME_PENDING = set()
+CREATE_PENDING = {}
 
 
 def init_pet_db():
@@ -261,6 +262,8 @@ def init_pet_db():
             db.execute(
                 "INSERT INTO pet_meta(key, value) VALUES ('legacy_pets_migrated', '1')"
             )
+        # Include newly migrated legacy characters in the timestamp initialization.
+        db.execute("UPDATE pet_characters SET last_needs_update = CAST(strftime('%%s','now') AS INTEGER) WHERE last_needs_update = 0")
         db.commit()
     print("Pet database ready at %s" % DB_PATH, flush=True)
 
