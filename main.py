@@ -237,6 +237,14 @@ def init_pet_db():
             )
         """)
         db.execute("""
+            CREATE TABLE IF NOT EXISTS pet_action_cooldowns (
+                pet_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                last_at INTEGER NOT NULL,
+                PRIMARY KEY (pet_id, action)
+            )
+        """)
+        db.execute("""
             CREATE TABLE IF NOT EXISTS pet_meta (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -307,6 +315,9 @@ def pet_create(user_id, character_type="dog", pet_name=None):
     if not name:
         return None
     with sqlite3.connect(str(DB_PATH), timeout=10) as db:
+        if db.execute("SELECT 1 FROM pet_characters WHERE user_id = ? LIMIT 1",
+                      (int(user_id),)).fetchone():
+            return None
         cur = db.execute("""
             INSERT INTO pet_characters
                 (user_id, character_type, pet_name, food, water, energy, cleanliness,
