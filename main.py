@@ -247,7 +247,13 @@ def telegram_call(method, payload=None, timeout=40):
             details = "no response details"
         raise RuntimeError("%s returned HTTP %s: %s" %
                            (method, exc.code, details)) from exc
-    except (URLError, TimeoutError, OSError, ValueError) as exc:
+    except URLError as exc:
+        # Include the network-level reason (DNS, TLS, connection reset, etc.)
+        # without ever logging the API URL, which contains the bot token.
+        reason = getattr(exc, "reason", None)
+        detail = "%s: %s" % (type(reason).__name__, reason) if reason is not None else "network error"
+        raise RuntimeError("%s request failed: %s" % (method, detail[:180])) from exc
+    except (TimeoutError, OSError, ValueError) as exc:
         raise RuntimeError("%s request failed: %s" % (method, type(exc).__name__)) from exc
     if not result.get("ok"):
         # Telegram's response description is useful but avoid echoing credentials.
@@ -304,8 +310,17 @@ def handle_pet_update(update):
         if not user_id or data not in ("pet", "feed"):
             telegram_call("answerCallbackQuery", {"callback_query_id": callback["id"]})
             return
-        # Acknowledge the tap first so Telegram stops showing the loading spinner quickly.
-        telegram_call("answerCallbackQuery", {"callback_query_id": callback["id"]})
+        # Acknowledge the tap quickly, but don't let a transient Telegram/network
+        # failure prevent the actual pet action from being applied.
+        try:
+            telegram_call(
+                "answerCallbackQuery",
+                {"callback_query_id": callback["id"]},
+                timeout=8
+            )
+        except RuntimeError as exc:
+            print("Pet bot callback acknowledgement failed: %s; continuing action." %
+                  safe_error_message(exc), flush=True)
         state = pet_db_action(user_id, data)
         reaction = random.choice(PET_REACTIONS[data])
         if chat.get("id") is not None and message.get("message_id") is not None:
