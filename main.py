@@ -373,6 +373,41 @@ def pet_db_action(user_id, action=None):
         db.commit()
     return pet_get_active(user_id, create_if_missing=False)
 
+
+def telegram_edit_with_retry(payload, timeout=12, attempts=3):
+    """Retry transient network failures when editing a Telegram message.
+
+    Pet state is changed separately in SQLite, so retries must only repeat the
+    display update, never the pet action itself.
+    """
+    for attempt in range(attempts):
+        try:
+            return telegram_call("editMessageText", payload, timeout=timeout)
+        except RuntimeError as exc:
+            message = str(exc).lower()
+            transient = (
+                "request failed" in message
+                and any(term in message for term in (
+                    "network is unreachable", "network is down",
+                    "temporary failure", "timed out", "timeout",
+                    "connection reset", "connection refused",
+                    "connection aborted", "no route to host",
+                    "name or service not known", "temporary name resolution",
+                    "urlerror", "oserror"
+                ))
+            )
+            if not transient or attempt + 1 >= attempts:
+                raise
+            delay = min(1 * (2 ** attempt), 4)
+            print(
+                "Telegram message edit hit a temporary network error; "
+                "retrying in %ss (attempt %s/%s)." %
+                (delay, attempt + 2, attempts),
+                flush=True
+            )
+            time.sleep(delay)
+
+
 def safe_error_message(exc):
     """Return a useful error detail without ever printing the bot token."""
     message = str(exc) or type(exc).__name__
@@ -570,7 +605,7 @@ def handle_pet_callback(callback):
         reaction = random.choice(reactions[data]).format(name=state["pet_name"])
         if chat_id is not None and message_id is not None:
             try:
-                telegram_call("editMessageText", {
+                telegram_edit_with_retry({
                     "chat_id": chat_id, "message_id": message_id,
                     "text": pet_message(state, reaction=reaction),
                     "reply_markup": pet_keyboard()
@@ -582,7 +617,7 @@ def handle_pet_callback(callback):
 
     if data == "new":
         if chat_id is not None and message_id is not None:
-            telegram_call("editMessageText", {
+            telegram_edit_with_retry({
                 "chat_id": chat_id,
                 "message_id": message_id,
                 "text": "Кого создадим? Выбери тип персонажа:",
@@ -596,7 +631,7 @@ def handle_pet_callback(callback):
             return
         state = pet_create(user_id, kind)
         if chat_id is not None and message_id is not None:
-            telegram_call("editMessageText", {
+            telegram_edit_with_retry({
                 "chat_id": chat_id, "message_id": message_id,
                 "text": pet_message(state, greeting=True) + "\n\nНажми «Переименовать», чтобы дать персонажу своё имя.",
                 "reply_markup": pet_keyboard()
@@ -607,7 +642,7 @@ def handle_pet_callback(callback):
         characters = pet_list(user_id)
         text = "Твои персонажи — выбери активного:" if characters else "У тебя пока нет персонажей. Создадим первого?"
         if chat_id is not None and message_id is not None:
-            telegram_call("editMessageText", {
+            telegram_edit_with_retry({
                 "chat_id": chat_id, "message_id": message_id,
                 "text": text,
                 "reply_markup": pet_list_keyboard(user_id)
@@ -621,7 +656,7 @@ def handle_pet_callback(callback):
             return
         state = pet_select(user_id, pet_id)
         if state and chat_id is not None and message_id is not None:
-            telegram_call("editMessageText", {
+            telegram_edit_with_retry({
                 "chat_id": chat_id, "message_id": message_id,
                 "text": "Теперь активный персонаж:\n\n" + pet_message(state),
                 "reply_markup": pet_keyboard()
@@ -649,7 +684,7 @@ def handle_pet_callback(callback):
             text = "Точно удалить персонажа «%s»? Это действие нельзя отменить." % state["pet_name"]
             keyboard = delete_keyboard(state)
         if chat_id is not None and message_id is not None:
-            telegram_call("editMessageText", {
+            telegram_edit_with_retry({
                 "chat_id": chat_id, "message_id": message_id,
                 "text": text, "reply_markup": keyboard
             }, timeout=12)
@@ -668,7 +703,7 @@ def handle_pet_callback(callback):
         )
         keyboard = pet_keyboard() if state else character_keyboard()
         if chat_id is not None and message_id is not None:
-            telegram_call("editMessageText", {
+            telegram_edit_with_retry({
                 "chat_id": chat_id, "message_id": message_id,
                 "text": text, "reply_markup": keyboard
             }, timeout=12)
@@ -677,7 +712,7 @@ def handle_pet_callback(callback):
     if data == "delete_no":
         state = pet_get_active(user_id, create_if_missing=False)
         if chat_id is not None and message_id is not None:
-            telegram_call("editMessageText", {
+            telegram_edit_with_retry({
                 "chat_id": chat_id, "message_id": message_id,
                 "text": pet_message(state) if state else "Удаление отменено. Создай персонажа, когда будешь готов.",
                 "reply_markup": pet_keyboard() if state else character_keyboard()
@@ -687,7 +722,7 @@ def handle_pet_callback(callback):
     if data == "back":
         state = pet_get_active(user_id, create_if_missing=False)
         if chat_id is not None and message_id is not None:
-            telegram_call("editMessageText", {
+            telegram_edit_with_retry({
                 "chat_id": chat_id, "message_id": message_id,
                 "text": pet_message(state) if state else "Давай создадим твоего первого персонажа!",
                 "reply_markup": pet_keyboard() if state else character_keyboard()
