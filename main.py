@@ -169,26 +169,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 
-def check_telegram_connectivity():
-    """Check HTTPS reachability of Telegram's website and Bot API without a token."""
-    domains = ("https://telegram.org", "https://api.telegram.org")
-    print("Checking outbound HTTPS connectivity to Telegram...", flush=True)
-    for url in domains:
-        try:
-            request = Request(url, headers={"User-Agent": "Tinybox-Connectivity-Test"})
-            with urlopen(request, timeout=10) as response:
-                print("CONNECTIVITY OK: %s — HTTP %s" % (url, response.status), flush=True)
-        except HTTPError as exc:
-            # An HTTP response, even an error status, proves the host was reachable.
-            print("CONNECTIVITY OK: %s — server responded HTTP %s" % (url, exc.code), flush=True)
-        except (URLError, TimeoutError, OSError) as exc:
-            reason = getattr(exc, "reason", exc)
-            print("CONNECTIVITY FAILED: %s — %s: %s" %
-                  (url, type(reason).__name__, reason), flush=True)
-
-
-
-
 # --- Tiny pet Telegram bot (optional; enabled only when BOT_TOKEN is configured) ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 DB_PATH = Path(os.environ.get("PET_DB_PATH", str(ROOT / "data" / "pets.sqlite3"))).expanduser()
@@ -366,7 +346,6 @@ def start_pet_bot():
 
 
 def main():
-    check_telegram_connectivity()
     start_pet_bot()
     raw_port = os.environ.get("PORT", "8080").strip()
     try:
