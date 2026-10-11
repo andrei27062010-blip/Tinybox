@@ -225,7 +225,7 @@ def init_pet_db():
                 db.execute("ALTER TABLE pet_characters ADD COLUMN %s %s" % (column, definition))
         if old_scale:
             db.execute("UPDATE pet_characters SET food = MIN(100, food * 10), happiness = MIN(100, happiness * 10)")
-        db.execute("UPDATE pet_characters SET last_needs_update = CAST(strftime('%%s','now') AS INTEGER) WHERE last_needs_update = 0")
+        db.execute("UPDATE pet_characters SET last_needs_update = CAST(strftime('%s','now') AS INTEGER) WHERE last_needs_update = 0")
         db.execute("""
             CREATE INDEX IF NOT EXISTS idx_pet_characters_user
             ON pet_characters(user_id, id)
@@ -263,7 +263,7 @@ def init_pet_db():
                 "INSERT INTO pet_meta(key, value) VALUES ('legacy_pets_migrated', '1')"
             )
         # Include newly migrated legacy characters in the timestamp initialization.
-        db.execute("UPDATE pet_characters SET last_needs_update = CAST(strftime('%%s','now') AS INTEGER) WHERE last_needs_update = 0")
+        db.execute("UPDATE pet_characters SET last_needs_update = CAST(strftime('%s','now') AS INTEGER) WHERE last_needs_update = 0")
         db.commit()
     print("Pet database ready at %s" % DB_PATH, flush=True)
 
