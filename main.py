@@ -611,8 +611,9 @@ def handle_pet_callback(callback):
                     "reply_markup": pet_keyboard()
                 }, timeout=12)
             except RuntimeError as exc:
-                if "message is not modified" not in str(exc).lower():
-                    raise
+                if "message is not modified" in str(exc).lower():
+                    return
+                raise
         return
 
     if data == "new":
