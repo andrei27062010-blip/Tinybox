@@ -322,7 +322,7 @@ def pet_create(user_id, character_type="dog", pet_name=None):
             INSERT INTO pet_characters
                 (user_id, character_type, pet_name, food, water, energy, cleanliness,
                  happiness, level, xp, last_needs_update)
-            VALUES (?, ?, ?, 75, 70, 80, 75, 70, 1, 0, ?)
+            VALUES (?, ?, ?, 75, 75, 75, 75, 75, 1, 0, ?)
         """, (int(user_id), character_type, name, int(time.time())))
         pet_id = cur.lastrowid
         db.execute("""
@@ -440,21 +440,21 @@ def pet_action_desire(state, action):
     energy = int(state.get("energy", 0))
     clean = int(state.get("cleanliness", 0))
     mood = int(state.get("happiness", 0))
-    if action == "feed" and food <= 65:
+    if action == "feed" and food <= 75:
         return "Я проголодался — самое время перекусить."
-    if action == "water" and water <= 60:
+    if action == "water" and water <= 75:
         return "Хочу пить. Принеси, пожалуйста, воды."
-    if action == "sleep" and energy <= 55:
+    if action == "sleep" and energy <= 75:
         return "Я устал и хочу отдохнуть."
     if action == "walk" and energy < 10:
         return None
-    if action == "walk" and energy >= 10 and mood <= 75:
+    if action == "walk" and energy >= 10 and mood <= 80:
         return "Хочу размяться и исследовать мир!"
-    if action == "play" and mood <= 70 and energy >= 25:
+    if action == "play" and mood <= 80 and energy >= 25:
         return "Мне скучно! Давай поиграем."
-    if action == "wash" and clean <= 60:
+    if action == "wash" and clean <= 75:
         return "Кажется, пора помыться."
-    if action == "pet" and mood <= 75:
+    if action == "pet" and mood <= 80:
         return "Мне не хватает внимания и ласки."
     return None
 
