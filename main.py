@@ -752,7 +752,7 @@ def pet_message(state, greeting=False, reaction=None):
         "cat": "Я независимая натура, но ласку и уют ценю.",
         "fox": "Я любопытный хитрец: давай играть и искать приключения!"
     }
-    reaction_line = (reaction + "\n\n") if reaction else ""
+    reaction_line = (reaction.replace("\\n", "\n") + "\n\n") if reaction else ""
     level = int(state.get("level", 1))
     xp = int(state.get("xp", 0))
     return (
