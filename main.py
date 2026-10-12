@@ -250,6 +250,14 @@ def init_pet_db():
                 value TEXT NOT NULL
             )
         """)
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS pet_notification_state (
+                pet_id INTEGER NOT NULL,
+                need TEXT NOT NULL,
+                band INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (pet_id, need)
+            )
+        """)
         migrated = db.execute(
             "SELECT value FROM pet_meta WHERE key = 'legacy_pets_migrated'"
         ).fetchone()
@@ -1092,6 +1100,53 @@ def bot_polling_loop():
             backoff = min(backoff * 2, 30)
 
 
+def pet_notification_loop():
+    """Send alerts when a pet's needs enter a low band, without repeating every poll."""
+    thresholds = {
+        "food": (50, 25, "🍗 %s проголодался. Пора покормить питомца!"),
+        "water": (50, 25, "💧 %s хочет пить. Не забудь налить воды!"),
+        "cleanliness": (35, 15, "🫧 %s пора помыть."),
+        "happiness": (35, 15, "💛 %s не хватает внимания. Погладь или поиграй с ним!"),
+        "energy": (25, 10, "⚡ %s очень устал. Пора дать ему отдохнуть."),
+    }
+    while True:
+        try:
+            with sqlite3.connect(str(DB_PATH), timeout=10) as db:
+                users = [row[0] for row in db.execute(
+                    "SELECT DISTINCT user_id FROM pet_characters"
+                ).fetchall()]
+            for user_id in users:
+                state = pet_apply_needs_decay(user_id)
+                if not state:
+                    continue
+                messages = []
+                with sqlite3.connect(str(DB_PATH), timeout=10) as db:
+                    for need, (warning, urgent, template) in thresholds.items():
+                        value = int(state.get(need, 100))
+                        band = 2 if value <= urgent else (1 if value <= warning else 0)
+                        row = db.execute(
+                            "SELECT band FROM pet_notification_state WHERE pet_id = ? AND need = ?",
+                            (state["id"], need)
+                        ).fetchone()
+                        previous = int(row[0]) if row else 0
+                        if band > previous and (band == 2 or previous == 0):
+                            messages.append(template % state["pet_name"])
+                        db.execute("""
+                            INSERT INTO pet_notification_state(pet_id, need, band)
+                            VALUES (?, ?, ?)
+                            ON CONFLICT(pet_id, need) DO UPDATE SET band = excluded.band
+                        """, (state["id"], need, band))
+                    db.commit()
+                for message in messages:
+                    try:
+                        telegram_call("sendMessage", {"chat_id": int(user_id), "text": message}, timeout=8)
+                    except (RuntimeError, OSError) as exc:
+                        print("Pet notification failed: %s" % safe_error_message(exc), flush=True)
+        except (sqlite3.Error, OSError, RuntimeError, ValueError, TypeError) as exc:
+            print("Pet notification loop error: %s" % safe_error_message(exc), flush=True)
+        time.sleep(300)
+
+
 def register_bot_commands():
     """Expose only the two intended commands in Telegram's command menu."""
     telegram_call("setMyCommands", {"commands": [
@@ -1116,6 +1171,8 @@ def start_pet_bot():
         print("Pet bot command menu setup failed: %s" % safe_error_message(exc), flush=True)
     thread = threading.Thread(target=bot_polling_loop, name="telegram-pet-bot", daemon=True)
     thread.start()
+    notifier = threading.Thread(target=pet_notification_loop, name="pet-notifications", daemon=True)
+    notifier.start()
 
 
 def main():
