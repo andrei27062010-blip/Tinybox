@@ -482,7 +482,7 @@ def pet_db_action(user_id, action=None):
         return state, "Я слишком устал для прогулки. Сначала нужно восстановить хотя бы 10 энергии."
     desire = pet_action_desire(state, action)
     if not desire:
-        return state, "Сейчас мне этого не хочется.\\n\\n" + pet_desires_text(state)
+        return state, "Сейчас мне этого не хочется."
     now = int(time.time())
     with sqlite3.connect(str(DB_PATH), timeout=10) as db:
         previous = db.execute(
@@ -492,7 +492,7 @@ def pet_db_action(user_id, action=None):
         if previous and now - int(previous[0]) < ACTION_COOLDOWN_SECONDS:
             remaining = ACTION_COOLDOWN_SECONDS - (now - int(previous[0]))
             minutes = max(1, (remaining + 59) // 60)
-            return state, "Мы уже занимались этим недавно. Попробуй снова примерно через %s мин.\\n\\n%s" % (minutes, pet_desires_text(state))
+            return state, "Мы уже занимались этим недавно. Попробуй снова примерно через %s мин." % minutes
     effects = {
         "pet": {"happiness": 8, "xp": 4},
         "feed": {"food": 25, "happiness": 2, "xp": 6},
