@@ -394,7 +394,7 @@ def pet_delete(user_id, pet_id=None):
 
 
 def pet_apply_needs_decay(user_id):
-    """Apply gentle real-time need decay, capped at one day and never to energy."""
+    """Randomly nudge needs down over time, with a one-day absence cap."""
     state = pet_get_active(user_id, create_if_missing=False)
     if not state:
         return None
@@ -402,13 +402,14 @@ def pet_apply_needs_decay(user_id):
     last = int(state.get("last_needs_update") or now)
     raw_elapsed = max(0, now - last)
     elapsed = min(raw_elapsed, 24 * 3600)
-    elapsed_hours = elapsed // 3600
-    food_loss = (elapsed_hours // 4) * 5
-    water_loss = (elapsed_hours // 3) * 5
-    mood_loss = (elapsed_hours // 7) * 4
-    clean_loss = (elapsed_hours // 9) * 4
-    if food_loss or water_loss or mood_loss or clean_loss:
-        next_update = now if raw_elapsed > 24 * 3600 else last + elapsed_hours * 3600
+    full_hours = elapsed // 3600
+    if full_hours:
+        losses = {"food": 0, "water": 0, "happiness": 0, "cleanliness": 0}
+        for _ in range(int(full_hours)):
+            if random.random() < 0.35:
+                need = random.choice(tuple(losses))
+                losses[need] += random.randint(1, 3)
+        next_update = now if raw_elapsed > 24 * 3600 else last + full_hours * 3600
         with sqlite3.connect(str(DB_PATH), timeout=10) as db:
             db.execute("""
                 UPDATE pet_characters
@@ -419,8 +420,8 @@ def pet_apply_needs_decay(user_id):
                     last_needs_update = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND user_id = ?
-            """, (int(food_loss), int(water_loss), int(mood_loss), int(clean_loss),
-                  next_update, state["id"], int(user_id)))
+            """, (losses["food"], losses["water"], losses["happiness"],
+                  losses["cleanliness"], next_update, state["id"], int(user_id)))
             db.commit()
     elif raw_elapsed > 24 * 3600:
         with sqlite3.connect(str(DB_PATH), timeout=10) as db:
@@ -765,11 +766,6 @@ def pet_message(state, greeting=False, reaction=None):
         + "⚡ Энергия: %s/100\n" % state.get("energy", 80)
         + "🫧 Чистота: %s/100\n\n" % state.get("cleanliness", 75)
         + pet_desires_text(state) + "\n\n"
-        + "🍗 Сытость снижается на 5 каждые 4 ч.\n"
-        + "💧 Вода — на 5 каждые 3 ч.\n"
-        + "😊 Настроение — на 4 каждые 7 ч.\n"
-        + "🫧 Чистота — на 4 каждые 9 ч.\n"
-        + "⚡ Энергия сама не падает — только от занятий.\n\n"
         + "Каждое действие даёт опыт. Заботься обо мне, чтобы повышать уровень!"
     )
 
@@ -1040,28 +1036,13 @@ def handle_pet_update(update):
             }, timeout=12)
             return
         send_pet_card(chat["id"], state, greeting=True)
-    elif command == "/help":
-        telegram_call("sendMessage", {
-            "chat_id": chat["id"],
-            "text": (
-                "Управляй питомцами кнопками под карточкой персонажа.\\n\\n"
-                "Создавай персонажей, выбирай активного, меняй имя и удаляй их "
-                "через кнопки. У каждого свой характер и отдельные показатели.\\n\\n"
-                "Доступные команды: /start и /help."
-            )
-        })
     elif command.startswith("/") and user_id in RENAME_PENDING:
         RENAME_PENDING.discard(user_id)
         telegram_call("sendMessage", {
             "chat_id": chat["id"],
             "text": "Переименование отменено."
         }, timeout=12)
-        if command == "/help":
-            telegram_call("sendMessage", {
-                "chat_id": chat["id"],
-                "text": "Управляй питомцами кнопками под карточкой. Доступны /start и /help."
-            }, timeout=12)
-        elif command == "/start":
+        if command == "/start":
             state = pet_apply_needs_decay(user_id)
             if state:
                 send_pet_card(chat["id"], state, greeting=True)
@@ -1084,7 +1065,7 @@ def handle_pet_update(update):
     elif text_value and user_id in RENAME_PENDING and text_value.startswith("/"):
         telegram_call("sendMessage", {
             "chat_id": chat["id"],
-            "text": "Сначала отправь новое имя обычным сообщением или нажми /help."
+            "text": "Сначала отправь новое имя обычным сообщением или нажми /start."
         })
 
 
@@ -1117,8 +1098,7 @@ def bot_polling_loop():
 def register_bot_commands():
     """Expose only the two intended commands in Telegram's command menu."""
     telegram_call("setMyCommands", {"commands": [
-        {"command": "start", "description": "Открыть питомца"},
-        {"command": "help", "description": "Помощь"}
+        {"command": "start", "description": "Открыть питомца"}
     ]}, timeout=12)
 
 
