@@ -394,39 +394,36 @@ def pet_delete(user_id, pet_id=None):
 
 
 def pet_apply_needs_decay(user_id):
-    """Randomly nudge needs down over time, with a one-day absence cap."""
+    """Apply noticeable hourly need decay, including the full time away."""
     state = pet_get_active(user_id, create_if_missing=False)
     if not state:
         return None
     now = int(time.time())
     last = int(state.get("last_needs_update") or now)
-    raw_elapsed = max(0, now - last)
-    elapsed = min(raw_elapsed, 24 * 3600)
-    full_hours = elapsed // 3600
+    full_hours = max(0, now - last) // 3600
     if full_hours:
-        losses = {"food": 0, "water": 0, "happiness": 0, "cleanliness": 0}
+        food = int(state.get("food", 75))
+        water = int(state.get("water", 70))
+        happiness = int(state.get("happiness", 70))
+        cleanliness = int(state.get("cleanliness", 75))
+        energy = int(state.get("energy", 80))
+        # Stop early when all needs reach zero, so long absences stay inexpensive.
         for _ in range(int(full_hours)):
-            if random.random() < 0.35:
-                need = random.choice(tuple(losses))
-                losses[need] += random.randint(1, 3)
-        next_update = now if raw_elapsed > 24 * 3600 else last + full_hours * 3600
+            food = max(0, food - random.randint(4, 8))
+            water = max(0, water - random.randint(5, 9))
+            happiness = max(0, happiness - random.randint(2, 4))
+            cleanliness = max(0, cleanliness - random.randint(1, 3))
+            energy = max(0, energy - random.randint(2, 4))
+            if food == water == happiness == cleanliness == energy == 0:
+                break
         with sqlite3.connect(str(DB_PATH), timeout=10) as db:
             db.execute("""
                 UPDATE pet_characters
-                SET food = MAX(0, food - ?),
-                    water = MAX(0, water - ?),
-                    happiness = MAX(0, happiness - ?),
-                    cleanliness = MAX(0, cleanliness - ?),
-                    last_needs_update = ?,
-                    updated_at = CURRENT_TIMESTAMP
+                SET food = ?, water = ?, happiness = ?, cleanliness = ?, energy = ?,
+                    last_needs_update = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND user_id = ?
-            """, (losses["food"], losses["water"], losses["happiness"],
-                  losses["cleanliness"], next_update, state["id"], int(user_id)))
-            db.commit()
-    elif raw_elapsed > 24 * 3600:
-        with sqlite3.connect(str(DB_PATH), timeout=10) as db:
-            db.execute("UPDATE pet_characters SET last_needs_update = ? WHERE id = ? AND user_id = ?",
-                       (now, state["id"], int(user_id)))
+            """, (food, water, happiness, cleanliness, energy, now,
+                  state["id"], int(user_id)))
             db.commit()
     return pet_get_active(user_id, create_if_missing=False)
 
