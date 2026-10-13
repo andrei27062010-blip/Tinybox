@@ -540,7 +540,7 @@ def pet_db_action(user_id, action=None):
             assignments.append("%s = MAX(0, %s - ?)" % (column, column))
         params.append(abs(amount))
     xp_gain = effects.get("xp", 0)
-    durations = {"sleep": 2 * 3600, "feed": 30, "water": 15, "wash": 5 * 60, "walk": 20 * 60}
+    durations = {"sleep": 2 * 3600, "feed": 30, "water": 15, "wash": 5 * 60, "walk": 20 * 60, "play": 5 * 60, "pet": 10}
     duration = durations.get(action, 0)
     assignments.extend(["xp = xp + ?", "last_needs_update = ?", "activity = ?", "activity_until = ?", "updated_at = CURRENT_TIMESTAMP"])
     params.extend([xp_gain, now, action if duration else "", now + duration if duration else 0, state["id"], int(user_id)])
