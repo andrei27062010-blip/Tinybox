@@ -206,6 +206,8 @@ def init_pet_db():
                 level INTEGER NOT NULL DEFAULT 1,
                 xp INTEGER NOT NULL DEFAULT 0,
                 last_needs_update INTEGER NOT NULL DEFAULT 0,
+                activity TEXT NOT NULL DEFAULT '',
+                activity_until INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
@@ -220,6 +222,8 @@ def init_pet_db():
             ("level", "INTEGER NOT NULL DEFAULT 1"),
             ("xp", "INTEGER NOT NULL DEFAULT 0"),
             ("last_needs_update", "INTEGER NOT NULL DEFAULT 0"),
+            ("activity", "TEXT NOT NULL DEFAULT ''"),
+            ("activity_until", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if column not in existing_columns:
                 db.execute("ALTER TABLE pet_characters ADD COLUMN %s %s" % (column, definition))
@@ -483,12 +487,28 @@ def pet_db_action(user_id, action=None):
     state = pet_apply_needs_decay(user_id) or pet_get_active(user_id, create_if_missing=False)
     if not state:
         return None, "Сначала создай персонажа."
+    now = int(time.time())
+    activity = state.get("activity") or ""
+    activity_until = int(state.get("activity_until") or 0)
+    if activity and activity_until <= now:
+        with sqlite3.connect(str(DB_PATH), timeout=10) as db:
+            db.execute("UPDATE pet_characters SET activity = '', activity_until = 0 WHERE id = ? AND user_id = ?",
+                       (state["id"], int(user_id)))
+            db.commit()
+        state["activity"], state["activity_until"] = "", 0
+        activity = ""
+    if activity and not (activity == "walk" and action != "wash"):
+        remaining = max(1, (activity_until - now + 59) // 60)
+        labels = {"sleep": "спит", "feed": "ест", "water": "пьёт воду", "wash": "моется", "walk": "на прогулке"}
+        return state, "Сейчас %s — питомец %s. Подожди примерно %s мин." % (
+            state["pet_name"], labels.get(activity, "занят"), remaining)
+    if action == "wash" and activity == "walk":
+        return state, "На прогулке душа нет — вернёмся домой, и тогда можно будет помыться."
     if action == "walk" and int(state.get("energy", 0)) < 10:
         return state, "Я слишком устал для прогулки. Сначала нужно восстановить хотя бы 10 энергии."
     desire = pet_action_desire(state, action)
     if not desire:
         return state, "Сейчас мне этого не хочется."
-    now = int(time.time())
     with sqlite3.connect(str(DB_PATH), timeout=10) as db:
         previous = db.execute(
             "SELECT last_at FROM pet_action_cooldowns WHERE pet_id = ? AND action = ?",
@@ -520,8 +540,10 @@ def pet_db_action(user_id, action=None):
             assignments.append("%s = MAX(0, %s - ?)" % (column, column))
         params.append(abs(amount))
     xp_gain = effects.get("xp", 0)
-    assignments.extend(["xp = xp + ?", "last_needs_update = ?", "updated_at = CURRENT_TIMESTAMP"])
-    params.extend([xp_gain, now, state["id"], int(user_id)])
+    durations = {"sleep": 2 * 3600, "feed": 30, "water": 15, "wash": 5 * 60, "walk": 20 * 60}
+    duration = durations.get(action, 0)
+    assignments.extend(["xp = xp + ?", "last_needs_update = ?", "activity = ?", "activity_until = ?", "updated_at = CURRENT_TIMESTAMP"])
+    params.extend([xp_gain, now, action if duration else "", now + duration if duration else 0, state["id"], int(user_id)])
     with sqlite3.connect(str(DB_PATH), timeout=10) as db:
         current = db.execute(
             "SELECT energy FROM pet_characters WHERE id = ? AND user_id = ?",
@@ -1120,6 +1142,17 @@ def pet_notification_loop():
                 if not state:
                     continue
                 messages = []
+                now = int(time.time())
+                activity = state.get("activity") or ""
+                activity_until = int(state.get("activity_until") or 0)
+                if activity and activity_until <= now:
+                    with sqlite3.connect(str(DB_PATH), timeout=10) as db:
+                        db.execute("UPDATE pet_characters SET activity = '', activity_until = 0 WHERE id = ?",
+                                   (state["id"],))
+                        db.commit()
+                    activity = ""
+                if activity in ("sleep", "feed", "water", "wash"):
+                    continue
                 with sqlite3.connect(str(DB_PATH), timeout=10) as db:
                     for need, (warning, urgent, template) in thresholds.items():
                         value = int(state.get(need, 100))
