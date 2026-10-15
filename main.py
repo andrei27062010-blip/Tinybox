@@ -442,6 +442,10 @@ def pet_apply_needs_decay(user_id):
                 energy = max(0, energy - random.randint(2, 4))
             if food == water == happiness == cleanliness == energy == 0:
                 break
+        if activity == "sleep" and now > activity_until:
+            post_sleep_hours = max(0, now - max(last, activity_until)) // 3600
+            for _ in range(int(post_sleep_hours)):
+                energy = max(0, energy - random.randint(2, 4))
 
     # Persist the timestamp during sleep too, so elapsed time is accounted for
     # without repeatedly applying the same recovery interval.
