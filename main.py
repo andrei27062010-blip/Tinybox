@@ -208,6 +208,7 @@ def init_pet_db():
                 last_needs_update INTEGER NOT NULL DEFAULT 0,
                 activity TEXT NOT NULL DEFAULT '',
                 activity_until INTEGER NOT NULL DEFAULT 0,
+                sleep_energy_start INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
@@ -224,6 +225,7 @@ def init_pet_db():
             ("last_needs_update", "INTEGER NOT NULL DEFAULT 0"),
             ("activity", "TEXT NOT NULL DEFAULT ''"),
             ("activity_until", "INTEGER NOT NULL DEFAULT 0"),
+            ("sleep_energy_start", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if column not in existing_columns:
                 db.execute("ALTER TABLE pet_characters ADD COLUMN %s %s" % (column, definition))
@@ -406,28 +408,44 @@ def pet_delete(user_id, pet_id=None):
 
 
 def pet_apply_needs_decay(user_id):
-    """Apply noticeable hourly need decay, including the full time away."""
+    """Apply need decay over time and gradual energy recovery while sleeping."""
     state = pet_get_active(user_id, create_if_missing=False)
     if not state:
         return None
     now = int(time.time())
     last = int(state.get("last_needs_update") or now)
-    full_hours = max(0, now - last) // 3600
+    elapsed = max(0, now - last)
+    full_hours = elapsed // 3600
+    activity = state.get("activity") or ""
+    activity_until = int(state.get("activity_until") or 0)
+
+    food = int(state.get("food", 75))
+    water = int(state.get("water", 70))
+    happiness = int(state.get("happiness", 70))
+    cleanliness = int(state.get("cleanliness", 75))
+    energy = int(state.get("energy", 80))
+
+    if activity == "sleep":
+        sleep_start_energy = int(state.get("sleep_energy_start") or energy)
+        sleep_started_at = activity_until - 2 * 3600
+        slept_seconds = min(2 * 3600, max(0, now - sleep_started_at))
+        energy = min(100, sleep_start_energy + (45 * slept_seconds) // (2 * 3600))
+
     if full_hours:
-        food = int(state.get("food", 75))
-        water = int(state.get("water", 70))
-        happiness = int(state.get("happiness", 70))
-        cleanliness = int(state.get("cleanliness", 75))
-        energy = int(state.get("energy", 80))
-        # Stop early when all needs reach zero, so long absences stay inexpensive.
+        # Needs keep changing during sleep, but sleep itself replaces energy decay.
         for _ in range(int(full_hours)):
             food = max(0, food - random.randint(4, 8))
             water = max(0, water - random.randint(5, 9))
             happiness = max(0, happiness - random.randint(2, 4))
             cleanliness = max(0, cleanliness - random.randint(1, 3))
-            energy = max(0, energy - random.randint(2, 4))
+            if activity != "sleep":
+                energy = max(0, energy - random.randint(2, 4))
             if food == water == happiness == cleanliness == energy == 0:
                 break
+
+    # Persist the timestamp during sleep too, so elapsed time is accounted for
+    # without repeatedly applying the same recovery interval.
+    if full_hours or activity == "sleep":
         with sqlite3.connect(str(DB_PATH), timeout=10) as db:
             db.execute("""
                 UPDATE pet_characters
@@ -440,7 +458,7 @@ def pet_apply_needs_decay(user_id):
     return pet_get_active(user_id, create_if_missing=False)
 
 
-ACTION_COOLDOWN_SECONDS = 20 * 60
+ACTION_COOLDOWN_SECONDS = 2 * 60
 
 
 def pet_action_desire(state, action):
@@ -522,7 +540,7 @@ def pet_db_action(user_id, action=None):
         "pet": {"happiness": 8, "xp": 4},
         "feed": {"food": 25, "happiness": 2, "xp": 6},
         "water": {"water": 30, "xp": 5},
-        "sleep": {"energy": 45, "happiness": 2, "xp": 5},
+        "sleep": {"happiness": 2, "xp": 5},
         "walk": {"happiness": 12, "energy": -18, "cleanliness": -8, "xp": 8},
         "wash": {"cleanliness": 35, "happiness": -2, "xp": 4},
         "play": {"happiness": 15, "energy": -15, "xp": 7},
@@ -542,8 +560,10 @@ def pet_db_action(user_id, action=None):
     xp_gain = effects.get("xp", 0)
     durations = {"sleep": 2 * 3600, "feed": 30, "water": 15, "wash": 5 * 60, "walk": 20 * 60, "play": 5 * 60, "pet": 10}
     duration = durations.get(action, 0)
-    assignments.extend(["xp = xp + ?", "last_needs_update = ?", "activity = ?", "activity_until = ?", "updated_at = CURRENT_TIMESTAMP"])
-    params.extend([xp_gain, now, action if duration else "", now + duration if duration else 0, state["id"], int(user_id)])
+    assignments.extend(["xp = xp + ?", "last_needs_update = ?", "activity = ?", "activity_until = ?", "sleep_energy_start = ?", "updated_at = CURRENT_TIMESTAMP"])
+    params.extend([xp_gain, now, action if duration else "", now + duration if duration else 0,
+                   int(state.get("energy", 0)) if action == "sleep" else int(state.get("sleep_energy_start") or 0),
+                   state["id"], int(user_id)])
     with sqlite3.connect(str(DB_PATH), timeout=10) as db:
         current = db.execute(
             "SELECT energy FROM pet_characters WHERE id = ? AND user_id = ?",
