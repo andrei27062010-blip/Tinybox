@@ -264,6 +264,14 @@ def init_pet_db():
                 PRIMARY KEY (pet_id, need)
             )
         """)
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS pet_need_crisis_timers (
+                pet_id INTEGER NOT NULL,
+                need TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                PRIMARY KEY (pet_id, need)
+            )
+        """)
         migrated = db.execute(
             "SELECT value FROM pet_meta WHERE key = 'legacy_pets_migrated'"
         ).fetchone()
@@ -1148,6 +1156,44 @@ def pet_notification_loop():
                 now = int(time.time())
                 activity = state.get("activity") or ""
                 activity_until = int(state.get("activity_until") or 0)
+
+                # Critical exhaustion starts a hidden 24-hour deadline, just like
+                # food/water emergencies. Recovering any energy before the deadline
+                # cancels it; otherwise the character runs away.
+                with sqlite3.connect(str(DB_PATH), timeout=10) as db:
+                    energy_timer = db.execute(
+                        "SELECT started_at FROM pet_need_crisis_timers WHERE pet_id = ? AND need = 'energy'",
+                        (state["id"],)
+                    ).fetchone()
+                    energy = int(state.get("energy", 100))
+                    if energy <= 0:
+                        if energy_timer is None:
+                            db.execute(
+                                "INSERT INTO pet_need_crisis_timers(pet_id, need, started_at) VALUES (?, 'energy', ?)",
+                                (state["id"], now)
+                            )
+                            messages.append(
+                                "🚨 %s полностью истощён! Срочно уложи его спать в течение суток, иначе он может убежать." % state["pet_name"]
+                            )
+                            energy_timer = (now,)
+                        elif now - int(energy_timer[0]) >= 24 * 60 * 60:
+                            escaped_name = state["pet_name"]
+                            db.commit()
+                            pet_delete(user_id, state["id"])
+                            try:
+                                telegram_call("sendMessage", {
+                                    "chat_id": int(user_id),
+                                    "text": "🏃 %s убежал, потому что за 24 часа так и не восстановил силы. Мне жаль — нужно было дать ему отдохнуть вовремя." % escaped_name
+                                }, timeout=8)
+                            except (RuntimeError, OSError) as exc:
+                                print("Pet runaway notification failed: %s" % safe_error_message(exc), flush=True)
+                            continue
+                    elif energy_timer is not None:
+                        db.execute(
+                            "DELETE FROM pet_need_crisis_timers WHERE pet_id = ? AND need = 'energy'",
+                            (state["id"],)
+                        )
+
                 if activity and activity_until <= now:
                     with sqlite3.connect(str(DB_PATH), timeout=10) as db:
                         db.execute("UPDATE pet_characters SET activity = '', activity_until = 0 WHERE id = ?",
@@ -1155,6 +1201,12 @@ def pet_notification_loop():
                         db.commit()
                     activity = ""
                 if activity in ("sleep", "feed", "water", "wash"):
+                    # Still send any critical-energy alert queued above.
+                    for message in messages:
+                        try:
+                            telegram_call("sendMessage", {"chat_id": int(user_id), "text": message}, timeout=8)
+                        except (RuntimeError, OSError) as exc:
+                            print("Pet notification failed: %s" % safe_error_message(exc), flush=True)
                     continue
                 with sqlite3.connect(str(DB_PATH), timeout=10) as db:
                     for need, (warning, urgent, template) in thresholds.items():
